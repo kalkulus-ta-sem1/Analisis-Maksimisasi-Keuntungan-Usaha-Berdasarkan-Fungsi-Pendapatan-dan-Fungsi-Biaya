@@ -484,7 +484,7 @@ class KalkulusUMKMApp(ctk.CTk):
         self.card_q_opt = self._make_metric_card(self.summary_bar, 0, "Titik Kritis (x*)", "69,2 porsi", "Syarat Stasioner P'(x) = 0", "#3b82f6")
         self.card_profit_max = self._make_metric_card(self.summary_bar, 1, "Nilai Maksimum P(x*)", "Rp 254.042", "Laba harian puncak mutlak", "#10b981")
         self.card_bep = self._make_metric_card(self.summary_bar, 2, "Nilai Minimum & BEP", "-Rp 33.000", "Batas rentang laba P(x) >= 0", "#f59e0b")
-        self.card_test2 = self._make_metric_card(self.summary_bar, 3, "Uji Turunan Kedua", "P''(x) = -120 < 0", "Kurva Konkaf / Maks Mutlak", "#8b5cf6")
+        self.card_test1 = self._make_metric_card(self.summary_bar, 3, "Uji Turunan Pertama", "P'(x): (+) -> 0 -> (-)", "Kiri naik, kanan turun (Maks)", "#8b5cf6")
 
     def _make_metric_card(self, parent, col, title, value, subtitle, accent_color):
         card = ctk.CTkFrame(parent, fg_color=("gray90", "#1e1e24"), corner_radius=8, border_width=1, border_color=("gray75", "#334155"))
@@ -784,7 +784,7 @@ class KalkulusUMKMApp(ctk.CTk):
 
         laporan_content = """
 ======================================================================================================
-               LAPORAN ILMIAH PROYEK AKHIR MATA KULIAH KALKULUS DASAR
+                LAPORAN ILMIAH PROYEK AKHIR MATA KULIAH KALKULUS DASAR
 ======================================================================================================
 
 Judul Proyek:
@@ -843,16 +843,14 @@ B. Konsep Titik Kritis (Critical Point):
    x* = 70 porsi / hari
    Kesimpulan: x* = 70 adalah satu-satunya titik kritis di dalam domain produksi.
 
-C. Konsep Nilai Maksimum dan Nilai Minimum:
-   1. Uji Turunan Pertama:
-      - Untuk x < 70 : P'(x) > 0 (fungsi monoton naik).
-      - Untuk x > 70 : P'(x) < 0 (fungsi monoton turun).
-      Karena tanda P'(x) berganti dari positif ke negatif di x* = 70, maka P(70) adalah nilai maksimum lokal.
-   2. Uji Turunan Kedua & Kecekungan:
-      P''(x) = d/dx [-100 x + 7.000] = -100
-      Karena P''(x) = -100 < 0 untuk seluruh x, kurva bersifat konkaf ke bawah (cekung ke bawah) secara global.
-      Hal ini membuktikan x* = 70 adalah TITIK MAKSIMUM MUTLAK GLOBAL.
-   3. Teorema Nilai Ekstrem pada Interval Tertutup [0, 140]:
+C. Konsep Nilai Maksimum dan Nilai Minimum (Uji Turunan Pertama):
+   1. Uji Turunan Pertama P'(x) di sekitar titik kritis x* = 70:
+      - Untuk 0 <= x < 70 (titik uji x = 60): P'(60) = -100(60) + 7.000 = +1.000 > 0 (kurva NAIK).
+      - Pada titik kritis x* = 70           : P'(70) = 0 (kondisi stasioner).
+      - Untuk x > 70 (titik uji x = 80)     : P'(80) = -100(80) + 7.000 = -1.000 < 0 (kurva TURUN).
+      Karena tanda P'(x) berubah dari POSITIF (+) ke NEGATIF (-) saat melewati x* = 70,
+      berdasarkan Uji Turunan Pertama maka P(70) terbukti merupakan TITIK MAKSIMUM MUTLAK.
+   2. Teorema Nilai Ekstrem pada Interval Tertutup [0, 140]:
       - Nilai Maksimum Mutlak : P(70) = Rp 185.000 / hari (pada omzet Rp 1.050.000 dan biaya Rp 865.000).
       - Nilai Minimum Mutlak : P(0) = -Rp 60.000 / hari (beban biaya tetap saat tidak memproduksi)
                                dan P(140) = -Rp 60.000 / hari (disekonomi biaya akibat beban kuadrat).
@@ -1175,11 +1173,30 @@ Referensi Ilmiah:
 
         if a > 0:
             q_opt = alpha / (2.0 * a)
-            test2_val = -2.0 * a
-            is_max = test2_val < 0
+            if 0.0 < q_opt < float(self.q_max):
+                step_uji = 10.0 if q_opt >= 15.0 else max(0.5, round(q_opt / 2.0, 1))
+                x_kiri = max(0.0, round(q_opt - step_uji, 1))
+                x_kanan = min(float(self.q_max), round(q_opt + step_uji, 1))
+                if x_kiri >= q_opt:
+                    x_kiri = 0.0
+                if x_kanan <= q_opt:
+                    x_kanan = float(self.q_max)
+            elif q_opt <= 0.0:
+                x_kiri = 0.0
+                x_kanan = min(float(self.q_max), 10.0)
+            else:
+                x_kiri = max(0.0, round(float(self.q_max) - 10.0, 1))
+                x_kanan = float(self.q_max)
+
+            p_prime_kiri = -2.0 * a * x_kiri + alpha
+            p_prime_kanan = -2.0 * a * x_kanan + alpha
+            is_max = (0.0 < q_opt < float(self.q_max)) and (p_prime_kiri > 0) and (p_prime_kanan < 0)
         else:
             q_opt = 0.0
-            test2_val = 0.0
+            x_kiri = 0.0
+            x_kanan = min(float(self.q_max), 10.0)
+            p_prime_kiri = alpha
+            p_prime_kanan = alpha
             is_max = False
 
         r_opt = p * q_opt
@@ -1199,7 +1216,9 @@ Referensi Ilmiah:
 
         self.calc_results = {
             "p": p, "c": c, "b": b, "a": a, "alpha": alpha,
-            "q_opt": q_opt, "test2_val": test2_val, "is_max": is_max,
+            "q_opt": q_opt, "is_max": is_max,
+            "x_kiri": x_kiri, "x_kanan": x_kanan,
+            "p_prime_kiri": p_prime_kiri, "p_prime_kanan": p_prime_kanan,
             "r_opt": r_opt, "c_opt": c_opt, "p_opt": p_opt,
             "ac_opt": ac_opt, "margin_pct": margin_pct,
             "D": D, "q_bep1": q_bep1, "q_bep2": q_bep2
@@ -1790,8 +1809,11 @@ Referensi Ilmiah:
         res = self.calc_results
         q_opt = res["q_opt"]
         p_opt = res["p_opt"]
-        test2 = res["test2_val"]
         c = res["c"]
+        x_kiri = res["x_kiri"]
+        x_kanan = res["x_kanan"]
+        pp_kiri = res["p_prime_kiri"]
+        pp_kanan = res["p_prime_kanan"]
 
         self.card_q_opt["val_lbl"].configure(text=f"x* = {q_opt:.1f} porsi")
         self.card_profit_max["val_lbl"].configure(text=f"Rp {p_opt:,.0f}".replace(",", "."))
@@ -1803,7 +1825,17 @@ Referensi Ilmiah:
             self.card_bep["val_lbl"].configure(text=f"-Rp {c:,.0f}".replace(",", "."))
             self.card_bep["sub_lbl"].configure(text="Tidak ada BEP real")
 
-        self.card_test2["val_lbl"].configure(text=f"P''(x) = {test2:.0f} < 0")
+        if res["is_max"]:
+            self.card_test1["val_lbl"].configure(text="P'(x): (+) -> 0 -> (-)")
+            self.card_test1["sub_lbl"].configure(
+                text=f"P'({x_kiri:g})>0, P'({x_kanan:g})<0 (Maks)"
+            )
+        elif pp_kiri <= 0 and pp_kanan < 0:
+            self.card_test1["val_lbl"].configure(text="P'(x) <= 0 (Turun)")
+            self.card_test1["sub_lbl"].configure(text="Maks ujung kiri x=0 (Rugi)")
+        else:
+            self.card_test1["val_lbl"].configure(text="P'(x) >= 0 (Naik)")
+            self.card_test1["sub_lbl"].configure(text=f"Naik hingga x={self.q_max}")
 
     def _update_live_card(self):
         q = self.slider_q
@@ -1911,14 +1943,22 @@ Menggunakan Teorema Dasar Kalkulus I (antiturunan integral dengan nilai awal C(0
    (Uji FTC I: d/dx [ P(x) ] = P'(x) = -{2*a:.0f}x + {alpha:,.0f})
 
 ----------------------------------------------------------------------------------------
-II. TITIK KRITIS x*, UJI TURUNAN KEDUA P''(x), & NILAI EKSTREM [0, {self.q_max}]
+II. TITIK KRITIS x*, UJI TURUNAN PERTAMA P'(x), & NILAI EKSTREM [0, {self.q_max}]
 ----------------------------------------------------------------------------------------
 1. Syarat Stasioner P'(x) = 0  <==>  MR(x) = MC(x):
    -{2*a:.0f}x + {alpha:,.0f} = 0  ==>  {2*a:.0f}x = {alpha:,.0f}
    x* = {alpha:,.0f} / {2*a:.0f} = {q_opt:.2f} porsi/hari  (dibulatkan: {round(q_opt)} porsi/hari)
 
-2. Uji Turunan Kedua & Kecekungan:
-   P''(x) = d/dx [ -{2*a:.0f}x + {alpha:,.0f} ] = -{2*a:.0f} < 0  ==>  Kurva P(x) konkaf ke bawah (Maksimum Mutlak Global).
+2. Uji Turunan Pertama (First Derivative Test) & Perubahan Tanda P'(x):
+   * Interval Kiri  (0 <= x < {q_opt:.2f}), titik uji x = {res['x_kiri']:g}:
+     P'({res['x_kiri']:g}) = -{2*a:.0f}({res['x_kiri']:g}) + {alpha:,.0f} = Rp {res['p_prime_kiri']:+,.0f}  ({'POSITIF (+) -> kurva NAIK' if res['p_prime_kiri'] > 0 else 'NEGATIF/NOL -> kurva TURUN'})
+   * Titik Kritis (x* = {q_opt:.2f}):
+     P'({q_opt:.2f}) = 0  (Stasioner / Puncak Perubahan Tanda)
+   * Interval Kanan ({q_opt:.2f} < x <= {self.q_max}), titik uji x = {res['x_kanan']:g}:
+     P'({res['x_kanan']:g}) = -{2*a:.0f}({res['x_kanan']:g}) + {alpha:,.0f} = Rp {res['p_prime_kanan']:+,.0f}  ({'NEGATIF (-) -> kurva TURUN' if res['p_prime_kanan'] < 0 else 'POSITIF/NOL -> kurva NAIK'})
+   * Garis Tanda P'(x):  [0] {'+++ (naik) +++' if res['p_prime_kiri'] > 0 else '--- (turun) ---'} [x* = {q_opt:.2f}] {'--- (turun) ---' if res['p_prime_kanan'] < 0 else '+++ (naik) +++'} [{self.q_max}]
+   * Kesimpulan Uji Turunan Pertama:
+     {'Tanda P\'(x) berubah dari POSITIF (+) ke NEGATIF (-) saat melewati x*, terbukti P(x*) adalah MAKSIMUM MUTLAK.' if res['is_max'] else 'Tidak terjadi perubahan tanda (+) ke (-) di dalam interior (0, x_max); ekstrem berada di batas domain.'}
 
 3. Evaluasi Nilai Maksimum, Minimum, & Titik Impas (BEP: P(x) = 0):
    * Nilai Maksimum Mutlak : P({q_opt:.2f}) = Rp {p_opt:,.0f}/hari  (Omzet R = Rp {r_opt:,.0f}, Biaya C = Rp {c_opt:,.0f})
@@ -2386,7 +2426,7 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
                     f"Fungsi Biaya C(x*): Rp {cost:,.0f}\n"
                     f"Biaya Rata-Rata AC: Rp {ac:,.0f}/porsi\n"
                     f"Turunan Pertama P'(x*): Rp 0/porsi (Kondisi Stasioner)\n"
-                    f"Turunan Kedua P''(x*): {-2.0*a:.0f} < 0 (Maks Mutlak Global)\n"
+                    f"Uji Turunan Pertama: (+) P'({res['x_kiri']:g})>0 -> 0 -> (-) P'({res['x_kanan']:g})<0 (Maks)\n"
                     f"Nilai Minimum Global: P(0) = -Rp {c:,.0f}\n"
                     f"Status: Puncak Tertinggi Nilai Maksimum Global"
                 ).replace(",", ".")
@@ -2425,6 +2465,7 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
             else:
                 st_txt = "Zona Laba Positif (P(x) > 0)" if profit > 0 else ("Titik Impas (P(x) = 0)" if abs(profit) < 1 else "Zona Rugi Defisit (P(x) < 0)")
                 rec_txt = "Tambah porsi (P'(x) > 0)" if p_prime > 50 else ("Kurangi porsi (P'(x) < 0)" if p_prime < -50 else "Puncak laba (P'(x) = 0)")
+                uji1_txt = "Monoton Naik (P'(x) > 0, kiri x*)" if p_prime > 1e-6 else ("Monoton Turun (P'(x) < 0, kanan x*)" if p_prime < -1e-6 else "Titik Balik Stasioner (P'(x) = 0)")
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Produksi (x): {q:.1f} porsi/hari\n"
@@ -2433,7 +2474,7 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
                     f"Biaya Total C(x): Rp {cost:,.0f}\n"
                     f"Biaya Rata-Rata AC(x): Rp {ac:,.0f}/porsi\n"
                     f"Turunan Pertama P'(x): Rp {p_prime:,.0f}/porsi\n"
-                    f"Turunan Kedua P''(x): {-2.0*a:.0f} (Konkaf)\n"
+                    f"Uji Turunan Pertama: {uji1_txt}\n"
                     f"Titik Kritis x*: {q_opt:.1f} | Nilai Maks: Rp {p_opt:,.0f}\n"
                     f"Status: {st_txt} | {rec_txt}"
                 ).replace(",", ".")
