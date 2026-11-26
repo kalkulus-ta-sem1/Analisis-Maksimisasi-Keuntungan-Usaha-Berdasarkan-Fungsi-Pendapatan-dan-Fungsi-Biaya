@@ -12,6 +12,18 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 import customtkinter as ctk
 
+from tasik_market_data import (
+    KATALOG_KOMODITAS_TASIK,
+    KONDISI_PASAR_CONFIG,
+    WILAYAH_CONFIG,
+    hitung_estimasi_umkm,
+)
+from kalkulus_integral import (
+    daftar_soal_pdf,
+    evaluasi_soal_pdf,
+    hitung_integral_umkm,
+)
+
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
@@ -25,45 +37,65 @@ class KalkulusUMKMApp(ctk.CTk):
         self.minsize(1050, 700)
 
         self.presets = {
-            "UMKM Ketoprak (Studi Kasus Laporan)": {
+            "UMKM Ketoprak (Harian Tasikmalaya)": {
                 "p": 15000.0,
-                "c": 60000.0,
-                "b": 8000.0,
-                "a": 50.0,
+                "c": 33000.0,
+                "b": 6700.0,
+                "a": 60.0,
                 "q_max": 140
             },
             "UMKM Warung Nasi Goreng": {
                 "p": 18000.0,
-                "c": 90000.0,
-                "b": 9500.0,
-                "a": 35.0,
-                "q_max": 180
+                "c": 48000.0,
+                "b": 8200.0,
+                "a": 50.0,
+                "q_max": 200
             },
             "UMKM Kopi Susu Kekinian": {
                 "p": 22000.0,
-                "c": 120000.0,
-                "b": 7500.0,
-                "a": 65.0,
-                "q_max": 150
+                "c": 68000.0,
+                "b": 6800.0,
+                "a": 75.0,
+                "q_max": 205
             },
-            "Kustom Parameter Sendiri": {
+            "UMKM Ketoprak (Studi Kasus Laporan UNSIL)": {
                 "p": 15000.0,
                 "c": 60000.0,
                 "b": 8000.0,
                 "a": 50.0,
+                "q_max": 140,
+                "static_report": True
+            },
+            "Kustom Parameter Sendiri": {
+                "p": 15000.0,
+                "c": 35000.0,
+                "b": 6700.0,
+                "a": 60.0,
                 "q_max": 140
             }
         }
 
         self.p = 15000.0
-        self.c = 60000.0
-        self.b = 8000.0
-        self.a = 50.0
+        self.c = 33000.0
+        self.b = 6700.0
+        self.a = 60.0
         self.q_max = 140
-        self.slider_q = 70.0
+        self.slider_q = 69.0
         self.sidebar_width = 380
         self._syncing_from_p = False
         self._last_p_text = "15000"
+        self._price_debounce_id = None
+        self._pending_price_autofill = False
+        self._manual_override = False
+        self.wilayah = "Kota Tasikmalaya (Pasar Cikurubuk)"
+        self.kondisi_pasar = "Harga Normal Pasar (Rata-rata)"
+        self.auto_tasik_var = tk.BooleanVar(value=True)
+        self.tasik_breakdown = hitung_estimasi_umkm(
+            self.p,
+            "UMKM Ketoprak (Harian Tasikmalaya)",
+            self.wilayah,
+            self.kondisi_pasar,
+        )
 
         self.calc_results = {}
         self.hover_items = {}
@@ -146,14 +178,47 @@ class KalkulusUMKMApp(ctk.CTk):
             command=self._apply_preset,
             font=ctk.CTkFont(size=11)
         )
-        self.preset_menu.pack(fill="x", pady=(0, 12))
+        self.preset_menu.pack(fill="x", pady=(0, 8))
+
+        wil_lbl = ctk.CTkLabel(self.side_scroll, text="Acuan Harga Daerah:", font=ctk.CTkFont(size=12, weight="bold"))
+        wil_lbl.pack(anchor="w", pady=(0, 2))
+
+        self.wilayah_menu = ctk.CTkOptionMenu(
+            self.side_scroll,
+            values=list(WILAYAH_CONFIG.keys()),
+            command=self._on_wilayah_change,
+            font=ctk.CTkFont(size=11)
+        )
+        self.wilayah_menu.set(self.wilayah)
+        self.wilayah_menu.pack(fill="x", pady=(0, 8))
+
+        kondisi_lbl = ctk.CTkLabel(self.side_scroll, text="Kondisi Harga Pasar (Naik/Turun):", font=ctk.CTkFont(size=12, weight="bold"))
+        kondisi_lbl.pack(anchor="w", pady=(0, 2))
+
+        self.kondisi_menu = ctk.CTkOptionMenu(
+            self.side_scroll,
+            values=list(KONDISI_PASAR_CONFIG.keys()),
+            command=self._on_kondisi_change,
+            font=ctk.CTkFont(size=11)
+        )
+        self.kondisi_menu.set(self.kondisi_pasar)
+        self.kondisi_menu.pack(fill="x", pady=(0, 8))
+
+        self.auto_tasik_switch = ctk.CTkSwitch(
+            self.side_scroll,
+            text="Auto-Isi Modal Harian (Non-Borongan)",
+            variable=self.auto_tasik_var,
+            command=self._on_toggle_auto_tasik,
+            font=ctk.CTkFont(size=11, weight="bold")
+        )
+        self.auto_tasik_switch.pack(anchor="w", pady=(0, 10))
 
         self.entries = {}
         fields = [
-            ("p", "Harga Jual (p)", "Rupiah per porsi", "15000"),
-            ("c", "Biaya Tetap (c / FC)", "Sewa, listrik, gas (Rp/hari)", "60000"),
-            ("b", "Biaya Var. Linier (b)", "Bahan baku dasar (Rp/porsi)", "8000"),
-            ("a", "Koef. Kuadrat (a)", "Disekonomi biaya (Rp/porsi²)", "50"),
+            ("p", "Harga Jual (p)", "Rupiah per porsi (ketik harga, modal harian terisi)", "15000"),
+            ("c", "Biaya Tetap Harian (c / FC)", "Sewa, pemakaian LPG, listrik & alat per hari", "33000"),
+            ("b", "Modal Bahan / Porsi (b)", "Belanja harian non-borongan pasar Tasik (Rp/porsi)", "6700"),
+            ("a", "Koef. Kuadrat (a)", "Disekonomi biaya (Rp/porsi²)", "60"),
             ("q_max", "Batas Rentang Porsi", "Maksimal porsi di grafik", "140")
         ]
 
@@ -169,11 +234,14 @@ class KalkulusUMKMApp(ctk.CTk):
             entry.pack(fill="x", pady=(0, 8))
             self.entries[key] = entry
 
-        self.entries["p"].bind("<KeyRelease>", self._on_price_change)
-        self.entries["p"].bind("<FocusOut>", self._on_price_change)
+        self.entries["p"].bind("<KeyRelease>", self._schedule_price_change)
+        self.entries["p"].bind("<FocusOut>", lambda _e=None: self._on_price_change(immediate=True))
+        self.entries["p"].bind("<Return>", lambda _e=None: self._on_price_change(immediate=True))
+        for manual_key in ("c", "b", "a", "q_max"):
+            self.entries[manual_key].bind("<KeyRelease>", self._on_manual_cost_edit)
 
         btn_frame = ctk.CTkFrame(self.side_scroll, fg_color="transparent")
-        btn_frame.pack(fill="x", pady=(6, 15))
+        btn_frame.pack(fill="x", pady=(6, 10))
 
         calc_btn = ctk.CTkButton(
             btn_frame,
@@ -189,7 +257,7 @@ class KalkulusUMKMApp(ctk.CTk):
         reset_btn = ctk.CTkButton(
             btn_frame,
             text="Reset Kasus Ketoprak",
-            command=lambda: self._apply_preset("UMKM Ketoprak (Studi Kasus Laporan)"),
+            command=self._reset_ketoprak_default,
             fg_color=("gray75", "#334155"),
             hover_color=("gray65", "#475569"),
             height=30,
@@ -197,12 +265,62 @@ class KalkulusUMKMApp(ctk.CTk):
         )
         reset_btn.pack(fill="x")
 
+        calc_w = max(240, self.sidebar_width - 60)
+        self.tasik_info_card = ctk.CTkFrame(
+            self.side_scroll,
+            fg_color=("gray90", "#18181b"),
+            corner_radius=8,
+            border_width=1,
+            border_color=("gray75", "#334155")
+        )
+        self.tasik_info_card.pack(fill="x", pady=(0, 6), padx=2)
+
+        self.tasik_segmen_lbl = ctk.CTkLabel(
+            self.tasik_info_card,
+            text="Basis Pasar: Tasikmalaya (Cikurubuk)",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=("#047857", "#34d399"),
+            wraplength=calc_w,
+            justify="left"
+        )
+        self.tasik_segmen_lbl.pack(anchor="w", padx=10, pady=(8, 2))
+
+        self.tasik_summary_lbl = ctk.CTkLabel(
+            self.tasik_info_card,
+            text="",
+            font=ctk.CTkFont(size=10),
+            wraplength=calc_w,
+            justify="left"
+        )
+        self.tasik_summary_lbl.pack(anchor="w", padx=10, pady=1)
+
+        self.tasik_note_lbl = ctk.CTkLabel(
+            self.tasik_info_card,
+            text="",
+            font=ctk.CTkFont(size=10),
+            text_color=("gray40", "gray70"),
+            wraplength=calc_w,
+            justify="left"
+        )
+        self.tasik_note_lbl.pack(anchor="w", padx=10, pady=(1, 6))
+
+        self.tasik_detail_btn = ctk.CTkButton(
+            self.tasik_info_card,
+            text="Lihat Rincian Harga Tasik ->",
+            command=self._open_tasik_tab,
+            height=26,
+            fg_color=("#2563eb", "#1d4ed8"),
+            hover_color=("#1d4ed8", "#1e40af"),
+            font=ctk.CTkFont(size=11, weight="bold")
+        )
+        self.tasik_detail_btn.pack(fill="x", padx=10, pady=(0, 8))
+
         sep = ctk.CTkFrame(self.side_scroll, height=2, fg_color=("gray70", "#334155"))
         sep.pack(fill="x", pady=12)
 
         slider_title = ctk.CTkLabel(
             self.side_scroll,
-            text="SIMULASI INTERAKTIF PORSI (q)",
+            text="SIMULASI INTERAKTIF PORSI (x)",
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color=("#2563eb", "#60a5fa")
         )
@@ -210,7 +328,7 @@ class KalkulusUMKMApp(ctk.CTk):
 
         self.slider_val_label = ctk.CTkLabel(
             self.side_scroll,
-            text=f"Jumlah Porsi Terpilih: 70 porsi/hari",
+            text=f"Jumlah Porsi Terpilih: 69 porsi/hari",
             font=ctk.CTkFont(size=12, weight="bold")
         )
         self.slider_val_label.pack(anchor="w", pady=(0, 2))
@@ -222,7 +340,7 @@ class KalkulusUMKMApp(ctk.CTk):
             number_of_steps=140,
             command=self._on_slider_change
         )
-        self.q_slider.set(70)
+        self.q_slider.set(69)
         self.q_slider.pack(fill="x", pady=(0, 10))
 
         self.live_card = ctk.CTkFrame(self.side_scroll, fg_color=("gray90", "#18181b"), corner_radius=8)
@@ -242,7 +360,7 @@ class KalkulusUMKMApp(ctk.CTk):
 
         self.live_rev_lbl = ctk.CTkLabel(
             self.live_card,
-            text="Pendapatan R(q): Rp 1.050.000",
+            text="Pendapatan R(x): Rp 1.035.000",
             font=ctk.CTkFont(size=11),
             wraplength=calc_w,
             justify="left"
@@ -251,7 +369,7 @@ class KalkulusUMKMApp(ctk.CTk):
 
         self.live_cost_lbl = ctk.CTkLabel(
             self.live_card,
-            text="Biaya Total C(q): Rp 865.000",
+            text="Biaya Total C(x): Rp 780.960",
             font=ctk.CTkFont(size=11),
             wraplength=calc_w,
             justify="left"
@@ -260,7 +378,7 @@ class KalkulusUMKMApp(ctk.CTk):
 
         self.live_profit_lbl = ctk.CTkLabel(
             self.live_card,
-            text="Keuntungan P(q): Rp 185.000",
+            text="Fungsi Laba P(x): Rp 254.040",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color="#10b981",
             wraplength=calc_w,
@@ -270,7 +388,7 @@ class KalkulusUMKMApp(ctk.CTk):
 
         self.live_mp_lbl = ctk.CTkLabel(
             self.live_card,
-            text="Laju Laba P'(q): Rp 0/porsi",
+            text="Laju Laba P'(x): Rp 0/porsi",
             font=ctk.CTkFont(size=10),
             text_color=("gray40", "gray70"),
             wraplength=calc_w,
@@ -308,6 +426,9 @@ class KalkulusUMKMApp(ctk.CTk):
         self.live_cost_lbl.configure(wraplength=calc_w)
         self.live_profit_lbl.configure(wraplength=calc_w)
         self.live_mp_lbl.configure(wraplength=calc_w)
+        self.tasik_segmen_lbl.configure(wraplength=calc_w)
+        self.tasik_summary_lbl.configure(wraplength=calc_w)
+        self.tasik_note_lbl.configure(wraplength=calc_w)
 
     def _on_splitter_release(self, event):
         is_dark = ctk.get_appearance_mode().lower() == "dark"
@@ -332,15 +453,19 @@ class KalkulusUMKMApp(ctk.CTk):
         self.tabview.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
 
         self.tab_grafik = self.tabview.add("Visualisasi Grafik")
-        self.tab_kalkulus = self.tabview.add("Penurunan Rumus Kalkulus")
-        self.tab_tabel = self.tabview.add("Tabel Data Simulasi")
-        self.tab_laporan = self.tabview.add("Laporan & Analisis Proyek")
+        self.tab_kalkulus = self.tabview.add("Rumus Kalkulus (PDF)")
+        self.tab_integral = self.tabview.add("Integral (PDF)")
+        self.tab_tabel = self.tabview.add("Tabel Simulasi")
+        self.tab_tasik = self.tabview.add("Harga Tasik")
+        self.tab_laporan = self.tabview.add("Laporan Proyek")
 
         self._configure_tabview_navbar()
 
         self._setup_tab_grafik()
         self._setup_tab_kalkulus()
+        self._setup_tab_integral()
         self._setup_tab_tabel()
+        self._setup_tab_tasik()
         self._setup_tab_laporan()
 
     def _configure_tabview_navbar(self):
@@ -356,10 +481,10 @@ class KalkulusUMKMApp(ctk.CTk):
         for i in range(4):
             self.summary_bar.grid_columnconfigure(i, weight=1)
 
-        self.card_q_opt = self._make_metric_card(self.summary_bar, 0, "Titik Kritis (qc)", "70 porsi", "Syarat Stasioner f'(q) = 0", "#3b82f6")
-        self.card_profit_max = self._make_metric_card(self.summary_bar, 1, "Nilai Maksimum f(qc)", "Rp 185.000", "Laba harian puncak mutlak", "#10b981")
-        self.card_bep = self._make_metric_card(self.summary_bar, 2, "Nilai Minimum & BEP", "-Rp 60.000", "Batas rentang laba f(q)>=0", "#f59e0b")
-        self.card_test2 = self._make_metric_card(self.summary_bar, 3, "Uji Turunan Kedua", "f''(q) = -100 < 0", "Kurva Konkaf / Maks Mutlak", "#8b5cf6")
+        self.card_q_opt = self._make_metric_card(self.summary_bar, 0, "Titik Kritis (x*)", "69,2 porsi", "Syarat Stasioner P'(x) = 0", "#3b82f6")
+        self.card_profit_max = self._make_metric_card(self.summary_bar, 1, "Nilai Maksimum P(x*)", "Rp 254.042", "Laba harian puncak mutlak", "#10b981")
+        self.card_bep = self._make_metric_card(self.summary_bar, 2, "Nilai Minimum & BEP", "-Rp 33.000", "Batas rentang laba P(x) >= 0", "#f59e0b")
+        self.card_test2 = self._make_metric_card(self.summary_bar, 3, "Uji Turunan Kedua", "P''(x) = -120 < 0", "Kurva Konkaf / Maks Mutlak", "#8b5cf6")
 
     def _make_metric_card(self, parent, col, title, value, subtitle, accent_color):
         card = ctk.CTkFrame(parent, fg_color=("gray90", "#1e1e24"), corner_radius=8, border_width=1, border_color=("gray75", "#334155"))
@@ -396,14 +521,14 @@ class KalkulusUMKMApp(ctk.CTk):
         self.graph_mode = ctk.CTkSegmentedButton(
             ctrl_bar,
             values=[
-                "Kurva Keuntungan P(q)",
-                "Pendapatan R(q) vs Biaya C(q)",
+                "Kurva Keuntungan P(x)",
+                "Pendapatan R(x) vs Biaya C(x)",
                 "Pendekatan Marjinal (MR vs MC)",
                 "Multi-Grafik (3-in-1 Dashboard)"
             ],
             command=self._on_graph_mode_change
         )
-        self.graph_mode.set("Kurva Keuntungan P(q)")
+        self.graph_mode.set("Kurva Keuntungan P(x)")
         self.graph_mode.grid(row=0, column=1, sticky="ew", padx=15)
         for i in range(4):
             self.graph_mode.grid_columnconfigure(i, weight=1, uniform="mode_tabs")
@@ -453,6 +578,123 @@ class KalkulusUMKMApp(ctk.CTk):
             anchor="w"
         )
         self.calc_text_label.pack(fill="both", expand=True, padx=15, pady=15)
+
+    def _setup_tab_integral(self):
+        self.tab_integral.grid_rowconfigure(1, weight=1)
+        self.tab_integral.grid_columnconfigure(0, weight=1)
+
+        ctrl_bar = ctk.CTkFrame(self.tab_integral, fg_color="transparent")
+        ctrl_bar.grid(row=0, column=0, sticky="ew", padx=6, pady=(0, 6))
+        ctrl_bar.grid_columnconfigure(0, weight=1)
+
+        self.int_submode = ctk.CTkSegmentedButton(
+            ctrl_bar,
+            values=[
+                "Penerapan Integral di UMKM (Rumus PDF)",
+                "Kalkulator 10 Soal Rumus PDF (A.1 - B.5)",
+            ],
+            command=self._on_integral_submode_change,
+        )
+        self.int_submode.set("Penerapan Integral di UMKM (Rumus PDF)")
+        self.int_submode.grid(row=0, column=0, sticky="ew", padx=4)
+
+        self.int_container = ctk.CTkFrame(self.tab_integral, fg_color="transparent")
+        self.int_container.grid(row=1, column=0, sticky="nsew", padx=4, pady=2)
+        self.int_container.grid_rowconfigure(0, weight=1)
+        self.int_container.grid_columnconfigure(0, weight=1)
+
+        # Panel 1: Penerapan Integral di UMKM mengikuti rumus PDF
+        self.int_umkm_scroll = ctk.CTkScrollableFrame(self.int_container)
+        self.int_umkm_scroll.grid(row=0, column=0, sticky="nsew")
+        self.int_umkm_scroll.grid_columnconfigure(0, weight=1)
+
+        umkm_plot_box = ctk.CTkFrame(self.int_umkm_scroll, fg_color=("gray95", "#18181b"), corner_radius=8)
+        umkm_plot_box.grid(row=0, column=0, sticky="ew", padx=6, pady=(4, 8))
+        umkm_plot_box.grid_columnconfigure(0, weight=1)
+
+        self.int_umkm_fig = Figure(figsize=(8.6, 5.2), dpi=96)
+        self.int_umkm_canvas = FigureCanvasTkAgg(self.int_umkm_fig, master=umkm_plot_box)
+        self.int_umkm_canvas.get_tk_widget().grid(row=0, column=0, sticky="ew")
+
+        self.int_umkm_text_lbl = ctk.CTkLabel(
+            self.int_umkm_scroll,
+            text="",
+            font=ctk.CTkFont(family="Consolas", size=11),
+            justify="left",
+            anchor="w",
+        )
+        self.int_umkm_text_lbl.grid(row=1, column=0, sticky="nsew", padx=12, pady=(4, 14))
+
+        # Panel 2: Kalkulator & Verifikator 10 Soal Rumus PDF (A.1-A.5 & B.1-B.5)
+        self.int_pdf_frame = ctk.CTkScrollableFrame(self.int_container)
+        self.int_pdf_frame.grid(row=0, column=0, sticky="nsew")
+        self.int_pdf_frame.grid_columnconfigure(0, weight=1)
+
+        pdf_top = ctk.CTkFrame(self.int_pdf_frame, fg_color=("gray90", "#1e1e24"), corner_radius=8)
+        pdf_top.grid(row=0, column=0, sticky="ew", padx=6, pady=(4, 8))
+        pdf_top.grid_columnconfigure(1, weight=1)
+
+        soal_lbl = ctk.CTkLabel(pdf_top, text="Pilih Rumus PDF:", font=ctk.CTkFont(size=12, weight="bold"))
+        soal_lbl.grid(row=0, column=0, padx=(10, 6), pady=8, sticky="w")
+
+        self._pdf_soal_list = daftar_soal_pdf()
+        self._pdf_judul_to_kode = {it["judul"]: it["kode"] for it in self._pdf_soal_list}
+        self.pdf_soal_menu = ctk.CTkOptionMenu(
+            pdf_top,
+            values=[it["judul"] for it in self._pdf_soal_list],
+            command=lambda _v: self._update_pdf_solver(),
+            font=ctk.CTkFont(size=11),
+        )
+        self.pdf_soal_menu.set(self._pdf_soal_list[8]["judul"])  # Default B.4 (nilai mutlak kuadrat)
+        self.pdf_soal_menu.grid(row=0, column=1, padx=6, pady=8, sticky="ew")
+
+        x_lbl = ctk.CTkLabel(pdf_top, text="x uji:", font=ctk.CTkFont(size=11, weight="bold"))
+        x_lbl.grid(row=0, column=2, padx=(6, 4), pady=8)
+
+        self.pdf_x_entry = ctk.CTkEntry(pdf_top, width=65, height=28, font=ctk.CTkFont(size=11))
+        self.pdf_x_entry.insert(0, "2")
+        self.pdf_x_entry.grid(row=0, column=3, padx=4, pady=8)
+        self.pdf_x_entry.bind("<Return>", lambda _e=None: self._update_pdf_solver())
+
+        ver_btn = ctk.CTkButton(
+            pdf_top,
+            text="Verifikasi",
+            width=85,
+            height=28,
+            fg_color="#10b981",
+            hover_color="#059669",
+            command=self._update_pdf_solver,
+            font=ctk.CTkFont(size=11, weight="bold"),
+        )
+        ver_btn.grid(row=0, column=4, padx=(4, 10), pady=8)
+
+        self.pdf_result_lbl = ctk.CTkLabel(
+            self.int_pdf_frame,
+            text="",
+            font=ctk.CTkFont(family="Consolas", size=11),
+            justify="left",
+            anchor="w",
+        )
+        self.pdf_result_lbl.grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 8))
+
+        pdf_plot_box = ctk.CTkFrame(self.int_pdf_frame, fg_color=("gray95", "#18181b"), corner_radius=8)
+        pdf_plot_box.grid(row=2, column=0, sticky="ew", padx=6, pady=(2, 10))
+        pdf_plot_box.grid_columnconfigure(0, weight=1)
+
+        self.int_pdf_fig = Figure(figsize=(8.4, 3.8), dpi=96)
+        self.int_pdf_canvas = FigureCanvasTkAgg(self.int_pdf_fig, master=pdf_plot_box)
+        self.int_pdf_canvas.get_tk_widget().grid(row=0, column=0, sticky="ew")
+
+        self._on_integral_submode_change("Penerapan Integral di UMKM (Rumus PDF)")
+
+    def _on_integral_submode_change(self, mode_val):
+        if mode_val == "Penerapan Integral di UMKM (Rumus PDF)":
+            self.int_pdf_frame.grid_remove()
+            self.int_umkm_scroll.grid()
+        else:
+            self.int_umkm_scroll.grid_remove()
+            self.int_pdf_frame.grid()
+            self._update_pdf_solver()
 
     def _setup_tab_tabel(self):
         self.tab_tabel.grid_rowconfigure(1, weight=1)
@@ -506,14 +748,14 @@ class KalkulusUMKMApp(ctk.CTk):
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended")
 
         col_configs = [
-            ("q", "Porsi (q)", 75, "center"),
-            ("R", "Pendapatan R(q)", 125, "e"),
-            ("C", "Total Biaya C(q)", 125, "e"),
-            ("P", "Keuntungan P(q)", 125, "e"),
-            ("AC", "Biaya Rata2/Porsi", 120, "e"),
+            ("q", "Porsi (x)", 75, "center"),
+            ("R", "Pendapatan R(x)", 125, "e"),
+            ("C", "Total Biaya C(x)", 125, "e"),
+            ("P", "Keuntungan P(x)", 125, "e"),
+            ("AC", "Biaya Rata2 AC(x)", 120, "e"),
             ("MR", "Marginal Rev (MR)", 115, "e"),
             ("MC", "Marginal Cost (MC)", 115, "e"),
-            ("P_prime", "Laju Laba P'(q)", 115, "e"),
+            ("P_prime", "Laju Laba P'(x)", 115, "e"),
             ("status", "Status Finansial", 130, "center")
         ]
 
@@ -563,86 +805,91 @@ yang paling menguntungkan. Menambah produksi memang berpotensi menaikkan pendapa
 akan memicu kenaikan biaya yang lebih cepat (disekonomi skala) akibat kelelahan kerja, lembur, dan pembelian
 bahan baku pelengkap secara mendadak dengan harga eceran.
 
-Studi ini memodelkan hubungan antara porsi produksi (q), fungsi pendapatan R(q), fungsi biaya C(q),
-dan fungsi keuntungan P(q). Menggunakan metode kalkulus diferensial, turunan pertama digunakan untuk
-menemukan titik kritis stasioner, sedangkan uji turunan kedua digunakan untuk memastikan titik maksimum mutlak.
+Studi ini memodelkan hubungan antara porsi produksi (x), fungsi pendapatan R(x), fungsi biaya C(x),
+dan fungsi keuntungan P(x), baik melalui turunan maupun penerapan integral (substitusi u, nilai mutlak,
+pecah polinom ln|x|, integral trigonometri, dan Teorema Dasar Kalkulus I).
 
 ------------------------------------------------------------------------------------------------------
-2. PEMODELAN MATEMATIKA KALKULUS
+2. PEMODELAN MATEMATIKA KALKULUS (CONTOH STUDI KASUS AWAL 15RB)
 ------------------------------------------------------------------------------------------------------
-- Variabel Keputusan : q (jumlah porsi ketoprak diproduksi & terjual per hari, q >= 0)
+- Variabel Keputusan : x (jumlah porsi ketoprak diproduksi & terjual per hari, x >= 0)
 - Parameter Model     :
     * Harga jual (p)            : Rp 15.000 / porsi
     * Biaya tetap harian (c/FC) : Rp 60.000 (sewa tempat, gas, penyusutan alat gerobak)
     * Biaya variabel dasar (b)  : Rp 8.000 (tahu, lontong, bihun, tauge, kerupuk, bumbu kacang dasar)
     * Koefisien kuadrat (a)     : Rp 50/porsi^2 (faktor disekonomi skala / kenaikan biaya marjinal)
 
-Fungsi yang Terbentuk:
-1. Fungsi Pendapatan : R(q) = 15.000 q
-2. Fungsi Biaya      : C(q) = 50 q^2 + 8.000 q + 60.000
-3. Fungsi Keuntungan : f(q) = R(q) - C(q)
-                     : f(q) = -50 q^2 + 7.000 q - 60.000
+Fungsi yang Terbentuk (via FTC I: C(x) = c + int_0^x MC(t) dt dan P(x) = -c + int_0^x P'(t) dt):
+1. Fungsi Pendapatan : R(x) = 15.000 x
+2. Fungsi Biaya      : C(x) = 50 x^2 + 8.000 x + 60.000
+3. Fungsi Keuntungan : P(x) = R(x) - C(x)
+                     : P(x) = -50 x^2 + 7.000 x - 60.000
 
 ------------------------------------------------------------------------------------------------------
-3. PENERAPAN KONSEP TURUNAN: TURUNAN PERTAMA, TITIK KRITIS, NILAI MAKSIMUM & MINIMUM
+3. PENERAPAN KONSEP TURUNAN & INTEGRAL PADA FUNGSI P(x)
 ------------------------------------------------------------------------------------------------------
-A. Konsep Turunan Pertama f'(q):
+A. Konsep Turunan Pertama P'(x):
    Laju perubahan sesaat keuntungan terhadap jumlah porsi:
-   f'(q) = d/dq [-50 q^2 + 7.000 q - 60.000]
-   f'(q) = -100 q + 7.000
-   Geometris: f'(q) adalah gradien garis singgung kurva laba f(q).
-   Ekonomis : f'(q) adalah Laba Marjinal (Marginal Profit).
+   P'(x) = d/dx [-50 x^2 + 7.000 x - 60.000]
+   P'(x) = -100 x + 7.000
+   Geometris: P'(x) adalah gradien garis singgung kurva laba P(x).
+   Ekonomis : P'(x) adalah Laba Marjinal (Marginal Profit).
 
 B. Konsep Titik Kritis (Critical Point):
    Titik kritis stasioner dicapai saat turunan pertama bernilai nol:
-   f'(q) = 0
-   -100 q + 7.000 = 0
-   100 q = 7.000
-   qc = 70 porsi / hari
-   Kesimpulan: qc = 70 adalah satu-satunya titik kritis di dalam domain produksi.
+   P'(x) = 0
+   -100 x + 7.000 = 0
+   100 x = 7.000
+   x* = 70 porsi / hari
+   Kesimpulan: x* = 70 adalah satu-satunya titik kritis di dalam domain produksi.
 
 C. Konsep Nilai Maksimum dan Nilai Minimum:
    1. Uji Turunan Pertama:
-      - Untuk q < 70 : f'(q) > 0 (fungsi monoton naik).
-      - Untuk q > 70 : f'(q) < 0 (fungsi monoton turun).
-      Karena tanda f'(q) berganti dari positif ke negatif di qc = 70, maka f(70) adalah nilai maksimum lokal.
+      - Untuk x < 70 : P'(x) > 0 (fungsi monoton naik).
+      - Untuk x > 70 : P'(x) < 0 (fungsi monoton turun).
+      Karena tanda P'(x) berganti dari positif ke negatif di x* = 70, maka P(70) adalah nilai maksimum lokal.
    2. Uji Turunan Kedua & Kecekungan:
-      f''(q) = d/dq [-100 q + 7.000] = -100
-      Karena f''(q) = -100 < 0 untuk seluruh q, kurva bersifat konkaf ke bawah (cekung ke bawah) secara global.
-      Hal ini membuktikan qc = 70 adalah TITIK MAKSIMUM MUTLAK GLOBAL.
+      P''(x) = d/dx [-100 x + 7.000] = -100
+      Karena P''(x) = -100 < 0 untuk seluruh x, kurva bersifat konkaf ke bawah (cekung ke bawah) secara global.
+      Hal ini membuktikan x* = 70 adalah TITIK MAKSIMUM MUTLAK GLOBAL.
    3. Teorema Nilai Ekstrem pada Interval Tertutup [0, 140]:
-      - Nilai Maksimum Mutlak : f(70) = Rp 185.000 / hari (pada omzet Rp 1.050.000 dan biaya Rp 865.000).
-      - Nilai Minimum Mutlak : f(0) = -Rp 60.000 / hari (beban biaya tetap saat tidak memproduksi)
-                               dan f(140) = -Rp 60.000 / hari (disekonomi biaya akibat beban kuadrat).
+      - Nilai Maksimum Mutlak : P(70) = Rp 185.000 / hari (pada omzet Rp 1.050.000 dan biaya Rp 865.000).
+      - Nilai Minimum Mutlak : P(0) = -Rp 60.000 / hari (beban biaya tetap saat tidak memproduksi)
+                               dan P(140) = -Rp 60.000 / hari (disekonomi biaya akibat beban kuadrat).
 
-D. Konsep Aplikasi Turunan dalam Optimasi Nyata UMKM:
+D. Konsep Aplikasi Turunan & Integral dalam Optimasi Nyata UMKM:
    1. Keseimbangan Ekonomi Marjinal (MR = MC):
-      f'(q) = 0  <=>  R'(q) - C'(q) = 0  <=>  MR = MC
-      MR(q) = Rp 15.000 / porsi
-      MC(q) = 100 q + 8.000
-      Pada qc = 70: MC(70) = 100(70) + 8.000 = Rp 15.000 (Keseimbangan tercapai).
-   2. Analisis Titik Impas (Break-Even Point / BEP) saat f(q) = 0:
-      -50 q^2 + 7.000 q - 60.000 = 0
+      P'(x) = 0  <=>  R'(x) - C'(x) = 0  <=>  MR = MC
+      MR(x) = Rp 15.000 / porsi
+      MC(x) = 100 x + 8.000
+      Pada x* = 70: MC(70) = 100(70) + 8.000 = Rp 15.000 (Keseimbangan tercapai).
+   2. Analisis Titik Impas (Break-Even Point / BEP) saat P(x) = 0:
+      -50 x^2 + 7.000 x - 60.000 = 0
       Diskriminan D = 7000^2 - 4(50)(60000) = 37.000.000
-      q_BEP1 = 9,17 porsi (dibulatkan 10 porsi untuk mulai untung).
-      q_BEP2 = 130,83 porsi (dibulatkan 130 porsi batas aman kapasitas).
-      Rentang Usaha Menguntungkan: 10 <= q <= 130 porsi per hari.
+      x_BEP1 = 9,17 porsi (dibulatkan 10 porsi untuk mulai untung).
+      x_BEP2 = 130,83 porsi (dibulatkan 130 porsi batas aman kapasitas).
+      Rentang Usaha Menguntungkan: 10 <= x <= 130 porsi per hari.
+   3. Penerapan Integral Mengikuti Rumus PDF (A.1-A.5 & B.1-B.5):
+      - Integral nilai mutlak linier & kuadrat (int |P'(x)| dx dan int |P(x)| dx)
+      - Integral biaya rata-rata AC(x) = (ax^2 + bx + c)/x dengan ln|x|
+      - Substitusi u + ubah batas untuk menghitung VC(x*) = (p^2 - b^2)/(4a)
+      - Integral trigonometri untuk proyeksi akumulasi laba bulanan 30 hari
 
 ------------------------------------------------------------------------------------------------------
 4. INTERPRETASI EKONOMI MARJINAL (MICROECONOMICS INSIGHT)
 ------------------------------------------------------------------------------------------------------
 Dalam teori ekonomi manajerial, keuntungan maksimal tercapai ketika Pendapatan Marjinal sama dengan
 Biaya Marjinal:
-   MR(q) = R'(q) = Rp 15.000
-   MC(q) = C'(q) = 100 q + 8.000
+   MR(x) = R'(x) = Rp 15.000
+   MC(x) = C'(x) = 100 x + 8.000
    Kondisi MR = MC:
-   15.000 = 100 q + 8.000  =>  100 q = 7.000  =>  q* = 70 porsi.
+   15.000 = 100 x + 8.000  =>  100 x = 7.000  =>  x* = 70 porsi.
 
 Penjelasan:
-- Selama q < 70, MR > MC (tambahan pendapatan lebih besar daripada tambahan biaya). Memperbanyak porsi
+- Selama x < 70, MR > MC (tambahan pendapatan lebih besar daripada tambahan biaya). Memperbanyak porsi
   akan MENAMBAH keuntungan total.
-- Saat q = 70, MR = MC (keuntungan berada di puncak optimal).
-- Saat q > 70, MR < MC (tambahan biaya melebihi pendapatan). Memaksakan menambah porsi justru akan
+- Saat x = 70, MR = MC (keuntungan berada di puncak optimal).
+- Saat x > 70, MR < MC (tambahan biaya melebihi pendapatan). Memaksakan menambah porsi justru akan
   MENURUNKAN keuntungan total akibat biaya lembur/bahan mahal.
 
 ------------------------------------------------------------------------------------------------------
@@ -688,6 +935,236 @@ Referensi Ilmiah:
         )
         lap_lbl.pack(fill="both", expand=True, padx=15, pady=15)
 
+    def _setup_tab_tasik(self):
+        self.tab_tasik.grid_rowconfigure(0, weight=1)
+        self.tab_tasik.grid_columnconfigure(0, weight=1)
+
+        self.tasik_scroll = ctk.CTkScrollableFrame(self.tab_tasik)
+        self.tasik_scroll.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        self.tasik_scroll.grid_columnconfigure(0, weight=1)
+
+        self.tasik_header_card = ctk.CTkFrame(
+            self.tasik_scroll,
+            fg_color=("gray90", "#1e1e24"),
+            corner_radius=8,
+            border_width=1,
+            border_color=("gray75", "#334155")
+        )
+        self.tasik_header_card.grid(row=0, column=0, sticky="ew", padx=6, pady=(4, 10))
+
+        header_title = ctk.CTkLabel(
+            self.tasik_header_card,
+            text="RINCIAN OTOMATIS MODAL & HARGA PASAR INDONESIA (BASIS TASIKMALAYA)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=("#047857", "#34d399")
+        )
+        header_title.pack(anchor="w", padx=12, pady=(10, 4))
+
+        self.tasik_detail_lbl = ctk.CTkLabel(
+            self.tasik_header_card,
+            text="",
+            font=ctk.CTkFont(size=11),
+            justify="left",
+            anchor="w",
+            wraplength=780
+        )
+        self.tasik_detail_lbl.pack(fill="x", padx=12, pady=(0, 10))
+        self.tasik_header_card.bind(
+            "<Configure>",
+            lambda e: self.tasik_detail_lbl.configure(wraplength=max(420, e.width - 30))
+        )
+
+        # Section 1: Rincian Biaya Variabel (b) & Belanja Harian Non-Borongan
+        var_title = ctk.CTkLabel(
+            self.tasik_scroll,
+            text="1. Rincian Modal Bahan Baku Harian per Porsi (b) & Estimasi Belanja Non-Borongan Hari Ini",
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        var_title.grid(row=1, column=0, sticky="w", padx=8, pady=(2, 4))
+
+        var_frame = ctk.CTkFrame(self.tasik_scroll, corner_radius=8)
+        var_frame.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 10))
+        var_frame.grid_columnconfigure(0, weight=1)
+
+        self.var_tree = ttk.Treeview(
+            var_frame,
+            columns=("komponen", "takaran", "subtotal", "rentang", "harian"),
+            show="headings",
+            height=8
+        )
+        for cid, cname, w, anc in [
+            ("komponen", "Komponen Bahan / Kemasan", 205, "w"),
+            ("takaran", "Takaran / Porsi", 185, "w"),
+            ("subtotal", "Modal / Porsi", 105, "e"),
+            ("rentang", "Naik-Turun (/Porsi)", 150, "center"),
+            ("harian", "Belanja Harian (q*)", 165, "e"),
+        ]:
+            self.var_tree.heading(cid, text=cname)
+            self.var_tree.column(cid, width=w, anchor=anc)
+        var_xscroll = ttk.Scrollbar(var_frame, orient="horizontal", command=self.var_tree.xview)
+        self.var_tree.configure(xscrollcommand=var_xscroll.set)
+        self.var_tree.grid(row=0, column=0, sticky="ew")
+        var_xscroll.grid(row=1, column=0, sticky="ew")
+        self.var_tree.tag_configure("total_row", background="#064e3b", foreground="#a7f3d0")
+
+        # Section 2: Rincian Biaya Tetap (c)
+        fix_title = ctk.CTkLabel(
+            self.tasik_scroll,
+            text="2. Rincian Biaya Tetap Operasional per Hari (c / FC - Pemakaian Riil Harian)",
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        fix_title.grid(row=3, column=0, sticky="w", padx=8, pady=(2, 4))
+
+        fix_frame = ctk.CTkFrame(self.tasik_scroll, corner_radius=8)
+        fix_frame.grid(row=4, column=0, sticky="ew", padx=6, pady=(0, 10))
+        fix_frame.grid_columnconfigure(0, weight=1)
+
+        self.fixed_tree = ttk.Treeview(
+            fix_frame,
+            columns=("komponen", "basis", "subtotal", "rentang", "sumber"),
+            show="headings",
+            height=7
+        )
+        for cid, cname, w, anc in [
+            ("komponen", "Komponen Operasional Tetap", 200, "w"),
+            ("basis", "Pemakaian Riil / Hari", 190, "w"),
+            ("subtotal", "Biaya / Hari", 105, "e"),
+            ("rentang", "Naik-Turun (/Hari)", 145, "center"),
+            ("sumber", "Referensi Tarif Lokal", 185, "w"),
+        ]:
+            self.fixed_tree.heading(cid, text=cname)
+            self.fixed_tree.column(cid, width=w, anchor=anc)
+        fix_xscroll = ttk.Scrollbar(fix_frame, orient="horizontal", command=self.fixed_tree.xview)
+        self.fixed_tree.configure(xscrollcommand=fix_xscroll.set)
+        self.fixed_tree.grid(row=0, column=0, sticky="ew")
+        fix_xscroll.grid(row=1, column=0, sticky="ew")
+        self.fixed_tree.tag_configure("total_row", background="#064e3b", foreground="#a7f3d0")
+
+        # Section 3: Simulasi Dampak Naik-Turunnya Harga Pasar
+        fluk_title = ctk.CTkLabel(
+            self.tasik_scroll,
+            text="3. Simulasi Dampak Naik-Turunnya Harga Bahan di Pasar Terhadap Modal & Laba Harian",
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        fluk_title.grid(row=5, column=0, sticky="w", padx=8, pady=(4, 4))
+
+        fluk_frame = ctk.CTkFrame(self.tasik_scroll, corner_radius=8)
+        fluk_frame.grid(row=6, column=0, sticky="ew", padx=6, pady=(0, 10))
+        fluk_frame.grid_columnconfigure(0, weight=1)
+
+        self.fluktuasi_tree = ttk.Treeview(
+            fluk_frame,
+            columns=("kondisi", "b_val", "c_val", "q_opt", "modal_harian", "laba_max"),
+            show="headings",
+            height=4
+        )
+        for cid, cname, w, anc in [
+            ("kondisi", "Kondisi Harga Pasar", 215, "w"),
+            ("b_val", "Modal / Porsi (b)", 115, "e"),
+            ("c_val", "Tetap / Hari (c)", 115, "e"),
+            ("q_opt", "Target (q*)", 95, "center"),
+            ("modal_harian", "Total Modal Harian", 140, "e"),
+            ("laba_max", "Laba Bersih Maks/Hr", 145, "e"),
+        ]:
+            self.fluktuasi_tree.heading(cid, text=cname)
+            self.fluktuasi_tree.column(cid, width=w, anchor=anc)
+        fluk_xscroll = ttk.Scrollbar(fluk_frame, orient="horizontal", command=self.fluktuasi_tree.xview)
+        self.fluktuasi_tree.configure(xscrollcommand=fluk_xscroll.set)
+        self.fluktuasi_tree.grid(row=0, column=0, sticky="ew")
+        fluk_xscroll.grid(row=1, column=0, sticky="ew")
+        self.fluktuasi_tree.tag_configure("active_row", background="#064e3b", foreground="#a7f3d0")
+
+        # Section 4: Katalog Harga Komoditas Tasikmalaya & Indonesia
+        cat_title = ctk.CTkLabel(
+            self.tasik_scroll,
+            text="4. Katalog Acuan Harga Komoditas, Energi, Sewa & UMK Tasikmalaya / Indonesia (2025-2026)",
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        cat_title.grid(row=7, column=0, sticky="w", padx=8, pady=(4, 4))
+
+        cat_frame = ctk.CTkFrame(self.tasik_scroll, corner_radius=8)
+        cat_frame.grid(row=8, column=0, sticky="nsew", padx=6, pady=(0, 10))
+        cat_frame.grid_columnconfigure(0, weight=1)
+
+        self.catalog_tree = ttk.Treeview(
+            cat_frame,
+            columns=("kategori", "komoditas", "harga", "kisaran", "sumber"),
+            show="headings",
+            height=13
+        )
+        for cid, cname, w, anc in [
+            ("kategori", "Kategori", 130, "w"),
+            ("komoditas", "Komoditas / Item", 205, "w"),
+            ("harga", "Acuan Utama", 130, "e"),
+            ("kisaran", "Kisaran Pasar Lapangan", 215, "w"),
+            ("sumber", "Sumber Pemantauan", 200, "w"),
+        ]:
+            self.catalog_tree.heading(cid, text=cname)
+            self.catalog_tree.column(cid, width=w, anchor=anc)
+
+        cat_yscroll = ttk.Scrollbar(cat_frame, orient="vertical", command=self.catalog_tree.yview)
+        cat_xscroll = ttk.Scrollbar(cat_frame, orient="horizontal", command=self.catalog_tree.xview)
+        self.catalog_tree.configure(yscrollcommand=cat_yscroll.set, xscrollcommand=cat_xscroll.set)
+        self.catalog_tree.grid(row=0, column=0, sticky="nsew")
+        cat_yscroll.grid(row=0, column=1, sticky="ns")
+        cat_xscroll.grid(row=1, column=0, sticky="ew")
+
+        for item in KATALOG_KOMODITAS_TASIK:
+            harga_txt = f"Rp {item['harga_tasik']:,.0f}/{item['satuan']}".replace(",", ".")
+            self.catalog_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    item["kategori"],
+                    item["komoditas"],
+                    harga_txt,
+                    item["kisaran"],
+                    item["sumber"],
+                ),
+            )
+
+        self._apply_treeview_theme(ctk.get_appearance_mode().lower() == "dark")
+
+    def _apply_treeview_theme(self, is_dark: bool):
+        style = ttk.Style()
+        style.theme_use("clam")
+        if is_dark:
+            bg = "#242424"
+            fg = "#f3f4f6"
+            head_bg = "#334155"
+            head_fg = "#ffffff"
+            total_bg = "#064e3b"
+            total_fg = "#a7f3d0"
+        else:
+            bg = "#ffffff"
+            fg = "#111827"
+            head_bg = "#e2e8f0"
+            head_fg = "#0f172a"
+            total_bg = "#d1fae5"
+            total_fg = "#065f46"
+
+        style.configure(
+            "Treeview",
+            background=bg,
+            foreground=fg,
+            fieldbackground=bg,
+            font=("Segoe UI", 10),
+            rowheight=24,
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=head_bg,
+            foreground=head_fg,
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.map("Treeview", background=[("selected", "#2563eb")], foreground=[("selected", "#ffffff")])
+
+        for tv_name in ("var_tree", "fixed_tree", "fluktuasi_tree"):
+            tv = getattr(self, tv_name, None)
+            if tv is not None:
+                tv.tag_configure("total_row", background=total_bg, foreground=total_fg)
+                tv.tag_configure("active_row", background=total_bg, foreground=total_fg)
+
     def _calculate_calculus_model(self):
         p = self.p
         c = self.c
@@ -729,6 +1206,28 @@ Referensi Ilmiah:
         }
 
     @staticmethod
+    def _parse_number_input(raw_text: str):
+        """Parse angka standar maupun format pemisah ribuan Indonesia (mis. 20.000 atau Rp 20.000)."""
+        import re
+        cleaned = raw_text.strip().replace("Rp", "").replace("rp", "").replace(" ", "")
+        if not cleaned or cleaned in ("-", "+", ".", "-.", "+."):
+            return None
+        if re.fullmatch(r"[+-]?\d{1,3}(\.\d{3})+", cleaned):
+            cleaned = cleaned.replace(".", "")
+        elif "," in cleaned and "." in cleaned:
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        elif "," in cleaned:
+            if re.fullmatch(r"[+-]?\d{1,3}(,\d{3})+", cleaned):
+                cleaned = cleaned.replace(",", "")
+            else:
+                cleaned = cleaned.replace(",", ".")
+        try:
+            val = float(cleaned)
+        except ValueError:
+            return None
+        return val if math.isfinite(val) else None
+
+    @staticmethod
     def _format_synced_number(value, max_decimals=2):
         """Format angka rapi tanpa .0 saat bilangan bulat dan bulatkan desimal seperlunya."""
         rounded = round(float(value), max_decimals)
@@ -749,45 +1248,112 @@ Referensi Ilmiah:
 
         self._update_all_views()
 
-    def _on_price_change(self, event=None):
-        """Menyesuaikan input c, b, a, q_max dan model kalkulus saat input p berubah."""
+    def _schedule_price_change(self, event=None):
+        if self._syncing_from_p:
+            return
+        self._pending_price_autofill = True
+        if self._price_debounce_id is not None:
+            try:
+                self.after_cancel(self._price_debounce_id)
+            except Exception:
+                pass
+        self._price_debounce_id = self.after(300, lambda: self._on_price_change(immediate=False))
+
+    def _on_wilayah_change(self, wilayah_name):
+        self.wilayah = wilayah_name
+        if self.auto_tasik_var.get():
+            self._on_price_change(immediate=True, force=True)
+        else:
+            self._update_tasik_tab()
+
+    def _on_kondisi_change(self, kondisi_name):
+        self.kondisi_pasar = kondisi_name
+        if self.auto_tasik_var.get():
+            self._on_price_change(immediate=True, force=True)
+        else:
+            self.tasik_breakdown = hitung_estimasi_umkm(
+                self.p, self.preset_menu.get(), self.wilayah, self.kondisi_pasar
+            )
+            self._update_tasik_tab()
+
+    def _on_toggle_auto_tasik(self):
+        if self.auto_tasik_var.get():
+            self._manual_override = False
+            self._on_price_change(immediate=True, force=True)
+        else:
+            self._update_tasik_tab()
+
+    def _on_manual_cost_edit(self, event=None):
+        if not self._syncing_from_p:
+            self._manual_override = True
+            self._pending_price_autofill = False
+
+    def _open_tasik_tab(self):
+        self.tabview.set("Harga Tasik")
+
+    def _reset_ketoprak_default(self):
+        self.wilayah = "Kota Tasikmalaya (Pasar Cikurubuk)"
+        self.wilayah_menu.set(self.wilayah)
+        self.kondisi_pasar = "Harga Normal Pasar (Rata-rata)"
+        self.kondisi_menu.set(self.kondisi_pasar)
+        self.auto_tasik_var.set(True)
+        self.preset_menu.set("UMKM Ketoprak (Harian Tasikmalaya)")
+        self._apply_preset("UMKM Ketoprak (Harian Tasikmalaya)")
+
+    def _on_price_change(self, event=None, immediate=False, force=False):
+        """Mengisi otomatis c, b, a, q_max harian (non-borongan) dari harga pasar Tasikmalaya saat p berubah."""
         if self._syncing_from_p:
             return
 
+        if immediate and self._price_debounce_id is not None:
+            try:
+                self.after_cancel(self._price_debounce_id)
+            except Exception:
+                pass
+            self._price_debounce_id = None
+
         raw = self.entries["p"].get().strip()
-        if raw == self._last_p_text:
+        if not force and raw == self._last_p_text:
             return
+
+        p_baru = self._parse_number_input(raw)
+        if p_baru is None or p_baru <= 0:
+            return
+
+        # Tahan eksekusi saat pengguna baru mengetik digit awal (mis. '2' atau '20' menuju '20000')
+        if not immediate and not force and p_baru < 1000:
+            return
+
         self._last_p_text = raw
+        self._pending_price_autofill = False
 
-        if raw in ("", "-", "+", ".", "-.", "+."):
+        if not self.auto_tasik_var.get():
+            c_val = self._parse_number_input(self.entries["c"].get())
+            b_val = self._parse_number_input(self.entries["b"].get())
+            a_val = self._parse_number_input(self.entries["a"].get())
+            q_val = self._parse_number_input(self.entries["q_max"].get())
+            if None not in (c_val, b_val, a_val, q_val) and a_val > 0 and b_val >= 0 and c_val >= 0:
+                self.c = c_val
+                self.b = b_val
+                self.a = a_val
+                self.q_max = max(20, int(q_val))
+            self.p = p_baru
+            self.tasik_breakdown = hitung_estimasi_umkm(
+                self.p, self.preset_menu.get(), self.wilayah, self.kondisi_pasar
+            )
+            self._sync_slider_and_views()
             return
 
-        try:
-            p_baru = float(raw)
-        except ValueError:
-            return
+        estimasi = hitung_estimasi_umkm(
+            p_baru, self.preset_menu.get(), self.wilayah, self.kondisi_pasar
+        )
+        c_baru = estimasi["c"]
+        b_baru = estimasi["b"]
+        a_baru = estimasi["a"]
+        q_max_baru = estimasi["q_max"]
 
-        if not math.isfinite(p_baru) or p_baru <= 0:
-            return
-
-        p_base = 15000.0
-        c_base = 60000.0
-        b_base = 8000.0
-        a_base = 50.0
-
-        rasio = p_baru / p_base
-        c_baru = c_base * (0.5 + 0.5 * rasio)
-        b_baru = b_base * rasio
-        a_baru = max(10.0, round(a_base * (0.7 + 0.3 * rasio), 1))
-        q_est = max(1.0, (p_baru - b_baru) / (2.0 * a_baru))
-
-        if not all(math.isfinite(v) for v in (c_baru, b_baru, a_baru, q_est)):
-            return
-
-        q_max_baru = max(40, int(round(q_est * 2.0)))
-
-        c_text = self._format_synced_number(c_baru, max_decimals=2)
-        b_text = self._format_synced_number(b_baru, max_decimals=2)
+        c_text = self._format_synced_number(c_baru, max_decimals=0)
+        b_text = self._format_synced_number(b_baru, max_decimals=0)
         a_text = self._format_synced_number(a_baru, max_decimals=1)
         q_max_text = str(q_max_baru)
 
@@ -806,16 +1372,14 @@ Referensi Ilmiah:
         finally:
             self._syncing_from_p = False
 
-        c_val = float(c_text)
-        b_val = float(b_text)
-        a_val = float(a_text)
-        if p_baru > 0 and a_val > 0 and b_val >= 0 and c_val >= 0:
-            self.p = p_baru
-            self.c = c_val
-            self.b = b_val
-            self.a = a_val
-            self.q_max = q_max_baru
-            self._sync_slider_and_views()
+        self.p = p_baru
+        self.c = float(c_text)
+        self.b = float(b_text)
+        self.a = float(a_text)
+        self.q_max = q_max_baru
+        self._manual_override = False
+        self.tasik_breakdown = estimasi
+        self._sync_slider_and_views()
 
     def _apply_preset(self, preset_name):
         if preset_name in self.presets:
@@ -841,19 +1405,50 @@ Referensi Ilmiah:
             finally:
                 self._syncing_from_p = False
 
-            self._on_click_calculate()
+            if data.get("static_report"):
+                self._manual_override = False
+                self._on_click_calculate()
+            elif self.auto_tasik_var.get():
+                self._on_price_change(immediate=True, force=True)
+            else:
+                self._manual_override = False
+                self._on_click_calculate()
 
     def _on_click_calculate(self):
+        if self._pending_price_autofill and self.auto_tasik_var.get():
+            self._on_price_change(immediate=True, force=True)
+            return
+
         try:
-            self.p = float(self.entries["p"].get())
-            self.c = float(self.entries["c"].get())
-            self.b = float(self.entries["b"].get())
-            self.a = float(self.entries["a"].get())
-            self.q_max = max(20, int(float(self.entries["q_max"].get())))
+            p_val = self._parse_number_input(self.entries["p"].get())
+            c_val = self._parse_number_input(self.entries["c"].get())
+            b_val = self._parse_number_input(self.entries["b"].get())
+            a_val = self._parse_number_input(self.entries["a"].get())
+            q_val = self._parse_number_input(self.entries["q_max"].get())
+
+            if None in (p_val, c_val, b_val, a_val, q_val):
+                raise ValueError("Invalid numeric format")
+
+            self.p = p_val
+            self.c = c_val
+            self.b = b_val
+            self.a = a_val
+            self.q_max = max(20, int(q_val))
 
             if self.p <= 0 or self.a <= 0 or self.b < 0 or self.c < 0:
                 messagebox.showerror("Kesalahan Input", "Parameter p dan a harus bernilai lebih besar dari 0, serta biaya tidak boleh negatif.")
                 return
+
+            est = hitung_estimasi_umkm(
+                self.p, self.preset_menu.get(), self.wilayah, self.kondisi_pasar
+            )
+            self.tasik_breakdown = est
+            self._manual_override = (
+                abs(self.c - est["c"]) > 1.0
+                or abs(self.b - est["b"]) > 1.0
+                or abs(self.a - est["a"]) > 0.15
+            )
+            self._last_p_text = self.entries["p"].get().strip()
 
             self._sync_slider_and_views()
         except ValueError:
@@ -871,14 +1466,325 @@ Referensi Ilmiah:
         ctk.set_appearance_mode(mode_str.lower())
         is_dark = mode_str.lower() == "dark"
         self.splitter.configure(bg="#334155" if is_dark else "#cbd5e1")
+        self._apply_treeview_theme(is_dark)
         self._redraw_graph()
+        self._update_integral_tab()
+        self._update_pdf_solver()
 
     def _update_all_views(self):
         self._update_summary_cards()
         self._update_live_card()
+        self._update_tasik_tab()
         self._update_kalkulus_text()
+        self._update_integral_tab()
         self._populate_table()
         self._redraw_graph()
+
+    def _update_integral_tab(self):
+        if not hasattr(self, "int_umkm_text_lbl"):
+            return
+
+        ig = hitung_integral_umkm(self.p, self.c, self.b, self.a, self.q_max)
+        b3 = ig["b3"]
+        b4 = ig["b4"]
+        a3 = ig["a3"]
+        b1 = ig["b1"]
+        a4 = ig["a4_b2"]
+        b5 = ig["b5"]
+
+        sub_lines = []
+        for idx, sub in enumerate(b4["sub_intervals"], 1):
+            tanda_formula = "P(x)" if "Positif" in sub["tanda"] else "-(P(x))"
+            sub_lines.append(
+                f"   * Sub-interval {idx} [{sub['lo']:.2f} .. {sub['hi']:.2f}] ({sub['tanda']} -> {tanda_formula}): "
+                f"Luas = Rp {sub['nilai_abs']:,.0f}"
+            )
+        sub_txt = "\n".join(sub_lines)
+
+        bep1_s = f"{ig['q_bep1']:.2f}" if ig["q_bep1"] is not None else "-"
+        bep2_s = f"{ig['q_bep2']:.2f}" if ig["q_bep2"] is not None else "-"
+        samples_txt = " | ".join(f"x={qv:g} -> Rp {av:,.2f}" for qv, av in b5["samples"])
+
+        txt = (
+            f"==============================================================================================\n"
+            f"     PENERAPAN RUMUS INTEGRAL (MENGIKUTI KODE RUMUS PDF A.1-A.5 & B.1-B.5) PADA MODEL UMKM\n"
+            f"==============================================================================================\n"
+            f"Parameter Aktif: p = Rp {ig['p']:,.0f} | c = Rp {ig['c']:,.0f} | b = Rp {ig['b']:,.0f} | a = {ig['a']} | Domain x ∈ [0, {ig['q_max']:.0f}]\n"
+            f"Fungsi Laba: P(x) = -{ig['a']}x² + {ig['alpha']:,.0f}x - {ig['c']:,.0f}   |   Laba Marjinal: P'(x) = -{2*ig['a']:.0f}x + {ig['alpha']:,.0f}\n\n"
+            f"1. INTEGRAL NILAI MUTLAK LINIER (MENGIKUTI RUMUS PDF B.3: ∫ |x - 4| dx)\n"
+            f"   Rumus: ∫[0..{ig['q_max']:.0f}] |P'(x)| dx = ∫[0..{ig['q_max']:.0f}] |MR - MC| dx\n"
+            f"   * Pembuat nol P'(x) = 0  ==>  x* = {ig['q_opt']:.2f} (split interval pada x = {b3['q_split']:.2f})\n"
+            f"   * [0 <= x <= {b3['q_split']:.2f}]  : P'(x) >= 0  -> ∫ P'(x) dx  = Rp {b3['kenaikan_laba']:,.0f}  (Total Kenaikan Laba Menuju Puncak)\n"
+            f"   * [{b3['q_split']:.2f} <= x <= {ig['q_max']:.0f}]: P'(x) < 0   -> ∫ -P'(x) dx = Rp {b3['pengikisan_laba']:,.0f}  (Pemborosan Over-Produksi)\n"
+            f"   * Total Integral Mutlak |P'(x)| (Analitis) = Rp {b3['total_eksak']:,.0f}  (Cek Numerik: Rp {b3['total_numerik']:,.0f})\n\n"
+            f"2. INTEGRAL NILAI MUTLAK KUADRAT (MENGIKUTI RUMUS PDF B.4: ∫ |x² - 3x - 4| dx)\n"
+            f"   Rumus: ∫[0..{ig['q_max']:.0f}] |P(x)| dx   (Akar P(x) = 0 di BEP1 = {bep1_s}, BEP2 = {bep2_s})\n"
+            f"{sub_txt}\n"
+            f"   * Total Area Surplus Laba (+) = Rp {b4['area_laba']:,.0f}  |  Total Area Defisit (-) = Rp {b4['area_rugi']:,.0f}\n"
+            f"   * Total Integral Mutlak ∫|P(x)| dx = Rp {b4['total_mutlak_eksak']:,.0f}  (Cek Numerik: Rp {b4['total_mutlak_numerik']:,.0f})\n"
+            f"   * Integral Netto ∫ P(x) dx = Rp {b4['integral_netto']:,.0f}  |  Rata-Rata Laba di [0,{ig['q_max']:.0f}] = Rp {b4['rata_laba_domain']:,.0f}/hari\n\n"
+            f"3. INTEGRAL PECAHAN POLINOM & ln|x| (MENGIKUTI RUMUS PDF A.3: ∫ (2x² - 5x + 6)/x dx)\n"
+            f"   Biaya Rata-Rata AC(x) = C(x)/x = ({ig['a']}x² + {ig['b']:,.0f}x + {ig['c']:,.0f})/x = {ig['a']}x + {ig['b']:,.0f} + {ig['c']:,.0f}/x\n"
+            f"   * ∫[{a3['q1']:.0f}..{a3['q2']:.0f}] AC(x) dx = [ ({ig['a']}/2)x² + {ig['b']:,.0f}x + {ig['c']:,.0f} ln|x| ]_{a3['q1']:.0f}^{a3['q2']:.0f} = Rp {a3['integral_ac']:,.0f}\n"
+            f"   * Rata-Rata Biaya Per Porsi pada [{a3['q1']:.0f}, {a3['q2']:.0f}] = Rp {a3['rata_rata_ac']:,.0f}/porsi\n\n"
+            f"4. INTEGRAL SUBSTITUSI u + UBAH BATAS (MENGIKUTI RUMUS PDF B.1 / A.1)\n"
+            f"   Menghitung Total Biaya Variabel Optimal VC(x*) = ∫[0..{b1['q_hi']:.2f}] ({2*ig['a']:.0f}x + {ig['b']:,.0f}) dx\n"
+            f"   * misal: u = {2*ig['a']:.0f}x + {ig['b']:,.0f}  ==>  du = {2*ig['a']:.0f} dx  ==>  dx = 1/{2*ig['a']:.0f} du\n"
+            f"   * Ubah batas: x = 0 -> u = {b1['u_lo']:,.0f}  |  x = {b1['q_hi']:.2f} -> u = {b1['u_hi']:,.0f}\n"
+            f"   * subs = (1/{2*ig['a']:.0f}) ∫[{b1['u_lo']:,.0f}..{b1['u_hi']:,.0f}] u du = [u² / {4*ig['a']:.0f}]_{b1['u_lo']:,.0f}^{b1['u_hi']:,.0f} = Rp {b1['vc_substitusi']:,.0f}\n"
+            f"   * Verifikasi rumus langsung a(x*)² + b(x*) = Rp {b1['vc_langsung']:,.0f} (Identik 100%)\n\n"
+            f"5. INTEGRAL TRIGONOMETRI SUBSTITUSI u = ωt (MENGIKUTI RUMUS PDF A.4 & B.2: Proyeksi Laba {a4['hari']} Hari)\n"
+            f"   L(t) = P* + ΔP·(½ sin(ωt) + sin(2ωt)), dengan ω = 2π/7 (siklus mingguan), P* = Rp {ig['p_opt']:,.0f}, ΔP = Rp {a4['delta_p']:,.0f}\n"
+            f"   * ∫[0..{a4['hari']}] L(t) dt = [ P*·t - (ΔP/(2ω))cos(ωt) - (ΔP/(2ω))cos(2ωt) ]_0^{a4['hari']}\n"
+            f"   * Akumulasi Laba {a4['hari']} Hari (Gelombang Penjualan) = Rp {a4['laba_bulanan_musiman']:,.0f}  (vs Datar 30×P*: Rp {a4['laba_bulanan_datar']:,.0f})\n\n"
+            f"6. TEOREMA DASAR KALKULUS I & L'HÔPITAL (MENGIKUTI RUMUS PDF B.5)\n"
+            f"   lim[x->0] (1/x) ∫[0..x] MC(t) dt  =  lim[x->0] (d/dx ∫[0..x] (2at + b) dt) / (d/dx [x])  =  lim[x->0] (2ax + b)/1  =  Rp {b5['limit_eksak']:,.0f}\n"
+            f"   * Konvergensi AVC(x) saat x -> 0+: {samples_txt}"
+        ).replace(",", ".")
+        self.int_umkm_text_lbl.configure(text=txt)
+
+        # Gambar 4 panel grafik integral UMKM
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        bg = "#18181b" if is_dark else "#ffffff"
+        fig_bg = "#18181b" if is_dark else "#f8f9fa"
+        tc = "#f3f4f6" if is_dark else "#111827"
+        gc = "#27272a" if is_dark else "#e5e7eb"
+
+        self.int_umkm_fig.clear()
+        self.int_umkm_fig.patch.set_facecolor(fig_bg)
+        gs = self.int_umkm_fig.add_gridspec(2, 2, hspace=0.45, wspace=0.28)
+        q_arr = np.linspace(0.0, ig["q_max"], 400)
+
+        def _st(ax, title, xl, yl):
+            ax.set_facecolor(bg)
+            ax.set_title(title, fontsize=9.5, fontweight="bold", color=tc, pad=6)
+            ax.set_xlabel(xl, fontsize=8, color=tc)
+            ax.set_ylabel(yl, fontsize=8, color=tc)
+            ax.tick_params(colors=tc, labelsize=7.5)
+            ax.grid(True, linestyle="--", alpha=0.5, color=gc)
+
+        # Panel 1: B.3 |P'(x)|
+        ax1 = self.int_umkm_fig.add_subplot(gs[0, 0])
+        _st(ax1, "B.3: Luas |P'(x)| = |MR - MC| (Naik vs Over-Produksi)", "Porsi (x)", "Rp/porsi")
+        fp_arr = -2.0 * ig["a"] * q_arr + ig["alpha"]
+        ax1.plot(q_arr, np.abs(fp_arr), color="#f59e0b", linewidth=2, label="|P'(x)|")
+        ax1.fill_between(q_arr, np.abs(fp_arr), 0, where=(fp_arr >= 0), color="#10b981", alpha=0.28, label="Naik Laba")
+        ax1.fill_between(q_arr, np.abs(fp_arr), 0, where=(fp_arr < 0), color="#ef4444", alpha=0.28, label="Pemborosan")
+        ax1.legend(loc="upper right", fontsize=7, facecolor=bg, labelcolor=tc)
+
+        # Panel 2: B.4 |P(x)|
+        ax2 = self.int_umkm_fig.add_subplot(gs[0, 1])
+        _st(ax2, "B.4: Luas |P(x)| (Surplus Laba & Defisit Dibalik)", "Porsi (x)", "Rupiah")
+        f_arr = -ig["a"] * (q_arr ** 2) + ig["alpha"] * q_arr - ig["c"]
+        ax2.plot(q_arr, np.abs(f_arr), color="#3b82f6", linewidth=2, label="|P(x)|")
+        ax2.plot(q_arr, f_arr, color="#94a3b8", linestyle="--", linewidth=1, label="P(x) asli")
+        ax2.fill_between(q_arr, np.abs(f_arr), 0, where=(f_arr >= 0), color="#10b981", alpha=0.28, label="Laba (+)")
+        ax2.fill_between(q_arr, np.abs(f_arr), 0, where=(f_arr < 0), color="#ef4444", alpha=0.25, label="Defisit (-)")
+        ax2.legend(loc="upper left", fontsize=7, facecolor=bg, labelcolor=tc)
+
+        # Panel 3: A.3 AC(x) & B.1 VC(x*)
+        ax3 = self.int_umkm_fig.add_subplot(gs[1, 0])
+        _st(ax3, "A.3 & B.1: Luas ∫MC(x)dx = VC(x*) & Kurva AC(x)", "Porsi (x)", "Rp/porsi")
+        q_pos = np.linspace(max(1.0, ig["q_max"] * 0.03), ig["q_max"], 350)
+        mc_pos = 2.0 * ig["a"] * q_pos + ig["b"]
+        ac_pos = ig["a"] * q_pos + ig["b"] + ig["c"] / q_pos
+        ax3.plot(q_pos, mc_pos, color="#ef4444", linewidth=2, label="MC(x) = 2ax + b")
+        ax3.plot(q_pos, ac_pos, color="#8b5cf6", linewidth=2, label="AC(x) = ax + b + c/x")
+        ax3.fill_between(q_pos, mc_pos, 0, where=(q_pos <= ig["q_opt"]), color="#ef4444", alpha=0.2, label="VC(x*)")
+        ax3.set_ylim(0, min(max(mc_pos) * 1.4, max(ac_pos)))
+        ax3.legend(loc="upper right", fontsize=7, facecolor=bg, labelcolor=tc)
+
+        # Panel 4: A.4/B.2 Proyeksi Laba 30 Hari
+        ax4 = self.int_umkm_fig.add_subplot(gs[1, 1])
+        _st(ax4, f"A.4/B.2: Proyeksi Laba Harian {a4['hari']} Hari (Gelombang)", "Hari ke-t", "Laba/Hari (Rp)")
+        t_arr = np.linspace(0.0, float(a4["hari"]), 300)
+        l_arr = ig["p_opt"] + a4["delta_p"] * (0.5 * np.sin(a4["omega"] * t_arr) + np.sin(2.0 * a4["omega"] * t_arr))
+        ax4.plot(t_arr, l_arr, color="#10b981", linewidth=2, label="L(t) Harian")
+        ax4.axhline(ig["p_opt"], color="#f59e0b", linestyle="--", linewidth=1.2, label="P* Rata-rata")
+        ax4.fill_between(t_arr, l_arr, 0, where=(l_arr >= 0), color="#10b981", alpha=0.18)
+        ax4.fill_between(t_arr, l_arr, 0, where=(l_arr < 0), color="#ef4444", alpha=0.18)
+        ax4.legend(loc="lower right", fontsize=7, facecolor=bg, labelcolor=tc)
+
+        self.int_umkm_fig.subplots_adjust(top=0.92, bottom=0.10, left=0.09, right=0.97, hspace=0.48, wspace=0.28)
+        self.int_umkm_canvas.draw()
+
+    def _update_pdf_solver(self):
+        if not hasattr(self, "pdf_soal_menu"):
+            return
+        judul = self.pdf_soal_menu.get()
+        kode = self._pdf_judul_to_kode.get(judul, "B.4")
+        x_val = self._parse_number_input(self.pdf_x_entry.get())
+        if x_val is None:
+            x_val = 2.0
+
+        hasil = evaluasi_soal_pdf(kode, x_uji=x_val)
+        teks = (
+            f"Soal [{hasil['kode']}]: {hasil['soal']}\n"
+            f"Hasil Eksak: {hasil['hasil_eksak']}\n"
+            f"-----------------------------------------------------------------------------------\n"
+            f"{hasil['langkah']}\n"
+            f"-----------------------------------------------------------------------------------\n"
+            f"Verifikasi Komputasi: {hasil['verifikasi']}"
+        )
+        self.pdf_result_lbl.configure(text=teks)
+
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        bg = "#18181b" if is_dark else "#ffffff"
+        fig_bg = "#18181b" if is_dark else "#f8f9fa"
+        tc = "#f3f4f6" if is_dark else "#111827"
+        gc = "#27272a" if is_dark else "#e5e7eb"
+
+        self.int_pdf_fig.clear()
+        self.int_pdf_fig.patch.set_facecolor(fig_bg)
+        ax = self.int_pdf_fig.add_subplot(111)
+        ax.set_facecolor(bg)
+        p_data = hasil["plot"]
+        ax.set_title(p_data["title"], fontsize=10.5, fontweight="bold", color=tc, pad=8)
+        ax.set_xlabel(p_data["xlabel"], fontsize=9, color=tc)
+        ax.set_ylabel(p_data["ylabel"], fontsize=9, color=tc)
+        ax.tick_params(colors=tc, labelsize=8)
+        ax.grid(True, linestyle="--", alpha=0.55, color=gc)
+
+        if hasil["jenis"] == "tak_tentu":
+            ax.plot(p_data["x"], p_data["y"], color="#3b82f6", linewidth=2, label="Integran f(x)")
+            ax.plot(p_data["x"], p_data["F"], color="#10b981", linewidth=2, linestyle="--", label="Antiturunan F(x) (C=0)")
+            ax.axhline(0, color="#64748b", linewidth=0.9)
+        elif hasil["jenis"] == "tentu":
+            ax.plot(p_data["x"], p_data["y"], color="#10b981", linewidth=2.2, label=f"Luas Area = {hasil['hasil_eksak']}")
+            ax.fill_between(p_data["x"], p_data["y"], 0, color="#10b981", alpha=0.25)
+            for sp in p_data.get("split", []):
+                ax.axvline(sp, color="#f59e0b", linestyle="--", linewidth=1.4, label=f"Titik Pecah x = {sp:g}")
+        else:
+            ax.plot(p_data["x"], p_data["y"], color="#8b5cf6", linewidth=2.2, label="Nilai fungsi saat x -> 0+")
+            ax.axhline(p_data["limit_y"], color="#10b981", linestyle="--", linewidth=1.5, label="Limit Eksak = 1/18")
+
+        ax.legend(loc="best", fontsize=8, facecolor=bg, labelcolor=tc)
+        self.int_pdf_fig.tight_layout()
+        self.int_pdf_canvas.draw()
+
+    def _update_tasik_tab(self):
+        est = getattr(self, "tasik_breakdown", None)
+        if not est:
+            return
+
+        satuan = est["satuan_produk"]
+        wil_cfg = WILAYAH_CONFIG.get(self.wilayah, WILAYAH_CONFIG["Kota Tasikmalaya (Pasar Cikurubuk)"])
+        kondisi_cfg = KONDISI_PASAR_CONFIG.get(self.kondisi_pasar, KONDISI_PASAR_CONFIG["Harga Normal Pasar (Rata-rata)"])
+        mode_txt = "Penyesuaian Manual / Studi Kasus" if self._manual_override else (
+            f"Auto Harian Non-Borongan ({kondisi_cfg['label_ringkas']})" if self.auto_tasik_var.get() else "Mode Manual (Auto-Isi Nonaktif)"
+        )
+
+        res = self.calc_results
+        q_opt = res.get("q_opt", 0.0)
+        p_opt = res.get("p_opt", 0.0)
+        q_harian = max(1, round(q_opt))
+        modal_bahan_hari = self.b * q_harian
+        total_modal_hari = modal_bahan_hari + self.c
+
+        # Update kartu ringkas di sidebar
+        self.tasik_segmen_lbl.configure(text=f"Segmen: {est['segmen']}")
+        self.tasik_summary_lbl.configure(
+            text=(
+                f"Modal/Porsi (b): Rp {self.b:,.0f} (kisaran Rp {est['b_min']:,.0f} - Rp {est['b_max']:,.0f})\n"
+                f"Tetap/Hari (c): Rp {self.c:,.0f}/hari (non-borongan)\n"
+                f"Belanja Harian ({q_harian} {satuan}): Rp {total_modal_hari:,.0f}/hari"
+            ).replace(",", ".")
+        )
+        if self._manual_override:
+            note_txt = "Catatan: Parameter memakai nilai manual/laporan. Klik 'Lihat Rincian' untuk bandingkan dengan pasar Tasikmalaya."
+        else:
+            note_txt = (
+                f"{wil_cfg['label_ringkas']} • {kondisi_cfg['label_ringkas']} | "
+                f"Naik-turun modal/hr: Rp {est['modal_harian_min']:,.0f} - Rp {est['modal_harian_max']:,.0f}"
+            ).replace(",", ".")
+        self.tasik_note_lbl.configure(text=note_txt)
+
+        if not hasattr(self, "tasik_detail_lbl"):
+            return
+
+        detail_txt = (
+            f"Usaha: {est['nama_usaha']}   |   Wilayah: {est['wilayah']}   |   Kondisi Pasar: {est['kondisi_pasar']}\n"
+            f"Status Model: {mode_txt}   |   Harga Jual (p): Rp {self.p:,.0f}/{satuan}   ->   {est['segmen']}\n"
+            f"Modal Belanja Harian ({q_harian} {satuan}, Non-Borongan): Bahan Rp {modal_bahan_hari:,.0f} + Tetap Rp {self.c:,.0f} = Rp {total_modal_hari:,.0f}/hari\n"
+            f"Rentang Naik-Turun Harga Pasar: b = Rp {est['b_min']:,.0f}-{est['b_max']:,.0f}/{satuan} | c = Rp {est['c_min']:,.0f}-{est['c_max']:,.0f}/hari | Laba Maks Aktif = Rp {p_opt:,.0f}/hari\n"
+            f"Dasar Disekonomi (a={self.a}): {est['disekonomi_catatan']} | {est['kondisi_catatan']}"
+        ).replace(",", ".")
+        self.tasik_detail_lbl.configure(text=detail_txt)
+
+        for tv in (self.var_tree, self.fixed_tree, self.fluktuasi_tree):
+            for row_id in tv.get_children():
+                tv.delete(row_id)
+
+        q_ref_est = max(1, est["q_target_harian"])
+        for it in est["var_items"]:
+            rentang_str = f"Rp {it['min_subtotal']:,.0f} - Rp {it['max_subtotal']:,.0f}".replace(",", ".")
+            belanja_item_harian = it["subtotal"] * q_ref_est
+            self.var_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    it["komponen"],
+                    it["takaran"],
+                    f"Rp {it['subtotal']:,.0f}".replace(",", "."),
+                    rentang_str,
+                    f"Rp {belanja_item_harian:,.0f}".replace(",", "."),
+                ),
+            )
+        self.var_tree.insert(
+            "",
+            tk.END,
+            values=(
+                f"TOTAL MODAL VARIABEL (b) PER {satuan.upper()}",
+                f"Belanja harian untuk {q_ref_est} {satuan} (non-borongan)",
+                f"Rp {est['b']:,.0f}".replace(",", "."),
+                f"Rp {est['b_min']:,.0f} - Rp {est['b_max']:,.0f}".replace(",", "."),
+                f"Rp {est['modal_bahan_harian']:,.0f}".replace(",", "."),
+            ),
+            tags=("total_row",),
+        )
+
+        for it in est["fixed_items"]:
+            rentang_fix = f"Rp {it['min_subtotal']:,.0f} - Rp {it['max_subtotal']:,.0f}".replace(",", ".")
+            self.fixed_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    it["komponen"],
+                    it["basis"],
+                    f"Rp {it['subtotal']:,.0f}".replace(",", "."),
+                    rentang_fix,
+                    it["sumber"],
+                ),
+            )
+        self.fixed_tree.insert(
+            "",
+            tk.END,
+            values=(
+                "TOTAL BIAYA TETAP HARIAN (c / FC)",
+                "Pemakaian riil per hari (non-borongan)",
+                f"Rp {est['c']:,.0f}".replace(",", "."),
+                f"Rp {est['c_min']:,.0f} - Rp {est['c_max']:,.0f}".replace(",", "."),
+                f"Total modal keluar/hr: Rp {est['total_modal_harian']:,.0f}".replace(",", "."),
+            ),
+            tags=("total_row",),
+        )
+
+        for sk in est["skenario_harga"]:
+            tag_sk = ("active_row",) if sk["aktif"] else ()
+            nama_sk = f"{'>> ' if sk['aktif'] else ''}{sk['nama']}"
+            self.fluktuasi_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    nama_sk,
+                    f"Rp {sk['b']:,.0f}".replace(",", "."),
+                    f"Rp {sk['c']:,.0f}".replace(",", "."),
+                    f"{sk['q_opt']:.1f} {satuan}",
+                    f"Rp {sk['total_modal_harian']:,.0f}".replace(",", "."),
+                    f"Rp {sk['p_opt']:,.0f}".replace(",", "."),
+                ),
+                tags=tag_sk,
+            )
 
     def _update_summary_cards(self):
         res = self.calc_results
@@ -887,7 +1793,7 @@ Referensi Ilmiah:
         test2 = res["test2_val"]
         c = res["c"]
 
-        self.card_q_opt["val_lbl"].configure(text=f"qc = {q_opt:.1f} porsi")
+        self.card_q_opt["val_lbl"].configure(text=f"x* = {q_opt:.1f} porsi")
         self.card_profit_max["val_lbl"].configure(text=f"Rp {p_opt:,.0f}".replace(",", "."))
 
         if res["q_bep1"] is not None and res["q_bep2"] is not None:
@@ -897,7 +1803,7 @@ Referensi Ilmiah:
             self.card_bep["val_lbl"].configure(text=f"-Rp {c:,.0f}".replace(",", "."))
             self.card_bep["sub_lbl"].configure(text="Tidak ada BEP real")
 
-        self.card_test2["val_lbl"].configure(text=f"f''(q) = {test2:.0f} < 0")
+        self.card_test2["val_lbl"].configure(text=f"P''(x) = {test2:.0f} < 0")
 
     def _update_live_card(self):
         q = self.slider_q
@@ -912,35 +1818,35 @@ Referensi Ilmiah:
         p_prime = -2.0 * a * q + (p - b)
 
         self.slider_val_label.configure(text=f"Jumlah Porsi Terpilih: {q:.0f} porsi/hari")
-        self.live_rev_lbl.configure(text=f"Pendapatan R(q): Rp {r:,.0f}".replace(",", "."))
-        self.live_cost_lbl.configure(text=f"Biaya Total C(q): Rp {cost:,.0f}".replace(",", "."))
+        self.live_rev_lbl.configure(text=f"Pendapatan R(x): Rp {r:,.0f}".replace(",", "."))
+        self.live_cost_lbl.configure(text=f"Biaya Total C(x): Rp {cost:,.0f}".replace(",", "."))
 
-        p_str = f"Fungsi Laba f(q): Rp {profit:,.0f}".replace(",", ".")
+        p_str = f"Fungsi Laba P(x): Rp {profit:,.0f}".replace(",", ".")
         self.live_profit_lbl.configure(text=p_str)
 
         opt_q = self.calc_results["q_opt"]
         if abs(q - opt_q) < 0.5:
-            self.live_status_lbl.configure(text="Status: TITIK KRITIS qc (NILAI MAKSIMUM)", text_color="#10b981")
+            self.live_status_lbl.configure(text="Status: TITIK KRITIS x* (NILAI MAKSIMUM)", text_color="#10b981")
             self.live_profit_lbl.configure(text_color="#10b981")
         elif q == 0:
-            self.live_status_lbl.configure(text="Status: UJUNG DOMAIN q=0 (NILAI MINIMUM MUTLAK)", text_color="#ef4444")
+            self.live_status_lbl.configure(text="Status: UJUNG DOMAIN x=0 (NILAI MINIMUM MUTLAK)", text_color="#ef4444")
             self.live_profit_lbl.configure(text_color="#ef4444")
         elif profit > 0:
-            self.live_status_lbl.configure(text="Status: ZONA LABA POSITIF (f(q) > 0)", text_color="#3b82f6")
+            self.live_status_lbl.configure(text="Status: ZONA LABA POSITIF (P(x) > 0)", text_color="#3b82f6")
             self.live_profit_lbl.configure(text_color="#3b82f6")
         elif abs(profit) < 100:
-            self.live_status_lbl.configure(text="Status: TITIK IMPAS BEP (f(q) = 0)", text_color="#f59e0b")
+            self.live_status_lbl.configure(text="Status: TITIK IMPAS BEP (P(x) = 0)", text_color="#f59e0b")
             self.live_profit_lbl.configure(text_color="#f59e0b")
         else:
-            self.live_status_lbl.configure(text="Status: ZONA RUGI DEFISIT (f(q) < 0)", text_color="#ef4444")
+            self.live_status_lbl.configure(text="Status: ZONA RUGI DEFISIT (P(x) < 0)", text_color="#ef4444")
             self.live_profit_lbl.configure(text_color="#ef4444")
 
         if p_prime > 50:
-            laju_str = f"Turunan Pertama f'(q): +Rp {p_prime:,.0f} (f' > 0: kurva naik)"
+            laju_str = f"Laju Laba P'(x): +Rp {p_prime:,.0f} (P' > 0: kurva naik)"
         elif p_prime < -50:
-            laju_str = f"Turunan Pertama f'(q): -Rp {abs(p_prime):,.0f} (f' < 0: kurva turun)"
+            laju_str = f"Laju Laba P'(x): -Rp {abs(p_prime):,.0f} (P' < 0: kurva turun)"
         else:
-            laju_str = f"Turunan Pertama f'(q): Rp 0 (Titik Kritis qc: f'(qc) = 0)"
+            laju_str = f"Laju Laba P'(x): Rp 0 (Titik Kritis x*: P'(x*) = 0)"
         self.live_mp_lbl.configure(text=laju_str)
 
     def _update_kalkulus_text(self):
@@ -955,146 +1861,118 @@ Referensi Ilmiah:
         r_opt = res["r_opt"]
         c_opt = res["c_opt"]
 
+        ig = hitung_integral_umkm(p, c, b, a, self.q_max)
+        b3 = ig["b3"]
+        b4 = ig["b4"]
+        a3 = ig["a3"]
+        b1 = ig["b1"]
+        a4 = ig["a4_b2"]
+        b5 = ig["b5"]
+
+        sub_lines = []
+        for idx, sub in enumerate(b4["sub_intervals"], 1):
+            tanda_formula = "P(x)" if "Positif" in sub["tanda"] else "-(P(x))"
+            sub_lines.append(
+                f"      * Sub-interval {idx} [{sub['lo']:.2f} .. {sub['hi']:.2f}] ({sub['tanda']} -> {tanda_formula}): "
+                f"Luas = Rp {sub['nilai_abs']:,.0f}"
+            )
+        sub_txt = "\n".join(sub_lines)
+
+        bep_block = ""
+        if res["q_bep1"] is not None:
+            bep_block = (
+                f"   * Titik Impas Bawah (BEP 1) : x1 = {res['q_bep1']:.2f} porsi/hari\n"
+                f"   * Titik Impas Atas (BEP 2)  : x2 = {res['q_bep2']:.2f} porsi/hari\n"
+                f"   * Rentang Produksi Untung (P(x) > 0): ({res['q_bep1']:.2f} ; {res['q_bep2']:.2f}) porsi/hari\n"
+                f"   * Batas Aman Minimum: Minimal {int(np.ceil(res['q_bep1']))} porsi | Batas Atas: {int(np.floor(res['q_bep2']))} porsi"
+            )
+        else:
+            bep_block = "   * Diskriminan negatif: Tidak ada titik impas real pada kombinasi parameter ini."
+
         penjelasan = f"""
 ========================================================================================
-    PENERAPAN KALKULUS DASAR: TURUNAN PERTAMA, TITIK KRITIS, NILAI MAKSIMUM & MINIMUM,
-                    SERTA APLIKASI TURUNAN MENGGUNAKAN RUMUS f(q)
+      PENERAPAN KALKULUS UMKM: INTEGRAL, SUBSTITUSI u, NILAI MUTLAK, & OPTIMASI P(x)
+                    (MENGIKUTI KODE RUMUS PADA LEMBAR PDF A.1-A.5 & B.1-B.5)
 ========================================================================================
 
-I. FORMULASI FUNGSI TUJUAN KEUNTUNGAN f(q)
+I. FORMULASI FUNGSI P(x), R(x), & C(x) DARI TEOREMA DASAR KALKULUS I (POLA PDF B.5)
 ----------------------------------------------------------------------------------------
-Dalam kalkulus diferensial, optimasi dimodelkan ke dalam fungsi objektif f(q):
-Misalkan:
-   q = Jumlah porsi ketoprak yang diproduksi dan terjual per hari (domain: 0 <= q <= {self.q_max}).
+Misalkan x = jumlah porsi produksi harian (domain tertutup: 0 <= x <= {self.q_max}).
+Dari laju marjinal usaha di pasar:
+   * Pendapatan Marjinal : MR(x) = R'(x) = p = Rp {p:,.0f} / porsi
+   * Biaya Marjinal      : MC(x) = C'(x) = {2*a:.0f}x + {b:,.0f}
+   * Laba Marjinal       : P'(x) = MR(x) - MC(x) = -{2*a:.0f}x + ({p:,.0f} - {b:,.0f}) = -{2*a:.0f}x + {alpha:,.0f}
 
-1. Fungsi Pendapatan Total (Total Revenue):
-   R(q) = p * q
-   R(q) = {p:,.0f} * q
-
-2. Fungsi Biaya Total (Total Cost):
-   C(q) = a * q^2 + b * q + c
-   C(q) = {a} * q^2 + {b:,.0f} * q + {c:,.0f}
-   * Konstanta c = Rp {c:,.0f} adalah Biaya Tetap (Fixed Cost) harian.
-   * Koefisien b = Rp {b:,.0f} adalah Biaya Variabel Linier bahan baku per porsi.
-   * Koefisien a = {a} adalah parameter kuadrat disekonomi skala kapasitas.
-
-3. Fungsi Keuntungan Objektif f(q) = R(q) - C(q):
-   f(q) = ({p:,.0f} * q) - ({a} * q^2 + {b:,.0f} * q + {c:,.0f})
-   f(q) = -{a} * q^2 + ({p:,.0f} - {b:,.0f}) * q - {c:,.0f}
-   f(q) = -{a} * q^2 + {alpha:,.0f} * q - {c:,.0f}
+Menggunakan Teorema Dasar Kalkulus I (antiturunan integral dengan nilai awal C(0) = c = Rp {c:,.0f}):
+   1. R(x) = ∫[0..x] MR(t) dt = ∫[0..x] {p:,.0f} dt = {p:,.0f}x
+   2. C(x) = c + ∫[0..x] MC(t) dt = {c:,.0f} + ∫[0..x] ({2*a:.0f}t + {b:,.0f}) dt = {a}x² + {b:,.0f}x + {c:,.0f}
+   3. P(x) = -c + ∫[0..x] P'(t) dt = -{c:,.0f} + ∫[0..x] (-{2*a:.0f}t + {alpha:,.0f}) dt
+      P(x) = -{a}x² + {alpha:,.0f}x - {c:,.0f}
+   (Uji FTC I: d/dx [ P(x) ] = P'(x) = -{2*a:.0f}x + {alpha:,.0f})
 
 ----------------------------------------------------------------------------------------
-II. KONSEP TURUNAN PERTAMA f'(q)
+II. TITIK KRITIS x*, UJI TURUNAN KEDUA P''(x), & NILAI EKSTREM [0, {self.q_max}]
 ----------------------------------------------------------------------------------------
-Definisi Turunan Pertama:
-   Laju perubahan sesaat dari nilai fungsi f(q) terhadap variabel bebas q.
-   Berdasarkan Aturan Pangkat (Power Rule) d/dq [q^n] = n * q^(n-1):
+1. Syarat Stasioner P'(x) = 0  <==>  MR(x) = MC(x):
+   -{2*a:.0f}x + {alpha:,.0f} = 0  ==>  {2*a:.0f}x = {alpha:,.0f}
+   x* = {alpha:,.0f} / {2*a:.0f} = {q_opt:.2f} porsi/hari  (dibulatkan: {round(q_opt)} porsi/hari)
 
-   f'(q) = d/dq [ -{a} * q^2 + {alpha:,.0f} * q - {c:,.0f} ]
-   f'(q) = -2 * ({a}) * q + {alpha:,.0f}
-   f'(q) = -{2*a:.0f} * q + {alpha:,.0f}
+2. Uji Turunan Kedua & Kecekungan:
+   P''(x) = d/dx [ -{2*a:.0f}x + {alpha:,.0f} ] = -{2*a:.0f} < 0  ==>  Kurva P(x) konkaf ke bawah (Maksimum Mutlak Global).
 
-Arti Fisis & Geometris:
-   * f'(q) menyatakan kemiringan garis singgung kurva f(q) di setiap titik produksi q.
-   * f'(q) menyatakan Laba Marjinal (Marginal Profit), yaitu tambahan keuntungan yang
-     diperoleh pelaku usaha untuk setiap tambahan 1 porsi ketoprak yang diproduksi.
-
-----------------------------------------------------------------------------------------
-III. KONSEP TITIK KRITIS (CRITICAL POINT)
-----------------------------------------------------------------------------------------
-Definisi Matematis Titik Kritis:
-   Titik kritis suatu fungsi f terjadi pada nilai q dalam domain di mana:
-   1. f'(q) = 0 (Titik Stasioner), ATAU
-   2. f'(q) tidak terdefinisi (Titik Singular).
-
-Karena f(q) merupakan fungsi kuadrat polinomial yang kontinu dan dapat diturunkan di
-seluruh bilangan real, titik kritis dicari dari syarat stasioner (First-Order Condition):
-   f'(q) = 0
-   -{2*a:.0f} * q + {alpha:,.0f} = 0
-   {2*a:.0f} * q = {alpha:,.0f}
-   q_c = {alpha:,.0f} / {2*a:.0f}
-   q_c = {q_opt:.2f} porsi/hari  (dibulatkan: {round(q_opt)} porsi/hari)
-
-Kesimpulan Titik Kritis:
-   Satu-satunya titik kritis stasioner di dalam domain adalah qc = {q_opt:.2f} porsi/hari.
+3. Evaluasi Nilai Maksimum, Minimum, & Titik Impas (BEP: P(x) = 0):
+   * Nilai Maksimum Mutlak : P({q_opt:.2f}) = Rp {p_opt:,.0f}/hari  (Omzet R = Rp {r_opt:,.0f}, Biaya C = Rp {c_opt:,.0f})
+   * Nilai Minimum Awal    : P(0) = -Rp {c:,.0f}/hari
+   * Nilai Ujung Domain    : P({self.q_max}) = Rp {(-a*(self.q_max**2) + alpha*self.q_max - c):,.0f}/hari
+   * Diskriminan BEP       : D = ({alpha:,.0f})² - 4({a})({c:,.0f}) = {res['D']:,.0f}
+{bep_block}
 
 ----------------------------------------------------------------------------------------
-IV. KONSEP NILAI MAKSIMUM DAN NILAI MINIMUM
+III. BIAYA VARIABEL TOTAL VC(x*) VIA SUBSTITUSI u + UBAH BATAS (POLA PDF B.1 & A.1)
 ----------------------------------------------------------------------------------------
-Untuk membuktikan jenis nilai ekstrem pada titik kritis qc serta mengevaluasi nilai
-ekstrem mutlak pada domain tertutup [0, {self.q_max}], diterapkan prinsip-prinsip kalkulus:
-
-1. UJI TURUNAN PERTAMA (FIRST DERIVATIVE TEST):
-   Evaluasi tanda f'(q) di sekitar titik kritis qc = {q_opt:.2f}:
-   * Pada interval 0 <= q < {q_opt:.2f} :
-     f'(q) > 0  ==> Fungsi f(q) monoton NAIK (monotonically increasing).
-   * Pada interval q > {q_opt:.2f} :
-     f'(q) < 0  ==> Fungsi f(q) monoton TURUN (monotonically decreasing).
-   Karena tanda f'(q) berubah dari POSITIF (+) menjadi NEGATIF (-) saat melintasi qc = {q_opt:.2f},
-   maka f({q_opt:.2f}) terbukti merupakan NILAI MAKSIMUM LOKAL.
-
-2. UJI TURUNAN KEDUA (SECOND DERIVATIVE TEST) & KECEKUNGAN (CONCAVITY):
-   Turunan kedua menguji kelengkungan kurva fungsi keuntungan:
-   f''(q) = d/dq [ f'(q) ]
-   f''(q) = d/dq [ -{2*a:.0f} * q + {alpha:,.0f} ]
-   f''(q) = -{2*a:.0f}
-
-   Evaluasi pada titik kritis qc = {q_opt:.2f}:
-   f''({q_opt:.2f}) = -{2*a:.0f} < 0
-   Karena f''(q) bernilai NEGATIF konstan untuk seluruh q pada domain, kurva f(q)
-   bersifat KONKAF KE BAWAH (cekung ke bawah) secara global.
-   Hal ini membuktikan secara mutlak bahwa qc = {q_opt:.2f} adalah TITIK MAKSIMUM GLOBAL.
-
-3. EVALUASI NILAI MAKSIMUM DAN MINIMUM PADA INTERVAL TERTUTUP [0, {self.q_max}]:
-   Menurut Teorema Nilai Ekstrem (Extreme Value Theorem), fungsi kontinu pada interval tertutup
-   pasti mencapai nilai maksimum mutlak dan nilai minimum mutlak pada titik kritis atau batas domain:
-
-   a. Nilai pada batas domain awal (q = 0, Tanpa Produksi):
-      f(0) = -{a}*(0)^2 + {alpha:,.0f}*(0) - {c:,.0f}
-      f(0) = -Rp {c:,.0f}  <--- NILAI MINIMUM MUTLAK
-      (Kerugian operasional terbesar akibat kewajiban membayar Biaya Tetap FC)
-
-   b. Nilai pada titik kritis interior (qc = {q_opt:.2f}, Produksi Optimum):
-      f({q_opt:.2f}) = -{a}*({q_opt:.2f})^2 + {alpha:,.0f}*({q_opt:.2f}) - {c:,.0f}
-      f({q_opt:.2f}) = Rp {p_opt:,.0f} / hari  <--- NILAI MAKSIMUM MUTLAK
-      (Keuntungan harian tertinggi yang dapat diraih pedagang ketoprak)
-
-   c. Nilai pada batas domain akhir (q = {self.q_max}, Produksi Kapasitas Maksimal):
-      f({self.q_max}) = -{a}*({self.q_max})^2 + {alpha:,.0f}*({self.q_max}) - {c:,.0f}
-      f({self.q_max}) = Rp {(-a*(self.q_max**2) + alpha*self.q_max - c):,.0f}
-      (Kerugian akibat lonjakan beban disekonomi kuadrat)
+Menghitung VC(x*) = ∫[0..{b1['q_hi']:.2f}] ({2*a:.0f}x + {b:,.0f}) dx:
+   misal : u = {2*a:.0f}x + {b:,.0f}  ==>  du = {2*a:.0f} dx  ==>  dx = (1/{2*a:.0f}) du
+   Ubah batas integrasi:
+   * Jika x = 0,       maka u = {b1['u_lo']:,.0f}
+   * Jika x = {b1['q_hi']:.2f}, maka u = {2*a:.0f}({b1['q_hi']:.2f}) + {b:,.0f} = {b1['u_hi']:,.0f}
+   subs  = (1/{2*a:.0f}) ∫[{b1['u_lo']:,.0f}..{b1['u_hi']:,.0f}] u du
+         = [ u² / {4*a:.0f} ]_{b1['u_lo']:,.0f}^{b1['u_hi']:,.0f}
+         = Rp {b1['vc_substitusi']:,.0f}   (sama persis dengan {a}({b1['q_hi']:.2f})² + {b:,.0f}({b1['q_hi']:.2f}) = Rp {b1['vc_langsung']:,.0f})
 
 ----------------------------------------------------------------------------------------
-V. APLIKASI TURUNAN PADA OPTIMASI USAHA UMKM
+IV. INTEGRAL BIAYA RATA-RATA AC(x) VIA PECAH POLINOM & ln|x| (POLA PDF A.3)
 ----------------------------------------------------------------------------------------
-Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisnis UMKM:
+   AC(x) = C(x) / x = ({a}x² + {b:,.0f}x + {c:,.0f}) / x = {a}x + {b:,.0f} + {c:,.0f}/x
+   ∫[{a3['q1']:.0f}..{a3['q2']:.0f}] AC(x) dx = ∫[{a3['q1']:.0f}..{a3['q2']:.0f}] {a}x dx + ∫[{a3['q1']:.0f}..{a3['q2']:.0f}] {b:,.0f} dx + ∫[{a3['q1']:.0f}..{a3['q2']:.0f}] ({c:,.0f}/x) dx
+   = [ ({a}/2)x² + {b:,.0f}x + {c:,.0f} ln|x| ]_{a3['q1']:.0f}^{a3['q2']:.0f}
+   = Rp {a3['integral_ac']:,.0f}   ==>   Rata-rata AC(x) pada [{a3['q1']:.0f}, {a3['q2']:.0f}] = Rp {a3['rata_rata_ac']:,.0f}/porsi
 
-1. Keseimbangan Ekonomi Marjinal (MR = MC):
-   Kondisi turunan pertama f'(q) = 0 setara secara matematis dengan:
-   d/dq [R(q) - C(q)] = 0  <==>  R'(q) - C'(q) = 0  <==>  R'(q) = C'(q)  <==>  MR = MC
-   * Pendapatan Marjinal : MR(q) = R'(q) = Rp {p:,.0f} / porsi
-   * Biaya Marjinal      : MC(q) = C'(q) = {2*a:.0f} * q + {b:,.0f}
-   Pada titik optimum qc = {q_opt:.2f}:
-   MC({q_opt:.2f}) = {2*a:.0f} * ({q_opt:.2f}) + {b:,.0f} = Rp {p:,.0f}
-   MR = MC = Rp {p:,.0f} (Keuntungan marjinal sama dengan nol).
+----------------------------------------------------------------------------------------
+V. INTEGRAL NILAI MUTLAK LINIER |P'(x)| (POLA PDF B.3: ∫ |x - 4| dx)
+----------------------------------------------------------------------------------------
+   ∫[0..{self.q_max}] |P'(x)| dx = ∫[0..{self.q_max}] |-{2*a:.0f}x + {alpha:,.0f}| dx
+   Pembuat nol P'(x) = 0 di x = {q_opt:.2f} (split pada x = {b3['q_split']:.2f}):
+   * 0 <= x <= {b3['q_split']:.2f}  : P'(x) >= 0  ==>  ∫ P'(x) dx  = Rp {b3['kenaikan_laba']:,.0f}  (Kenaikan laba menuju puncak)
+   * {b3['q_split']:.2f} <= x <= {self.q_max}: P'(x) < 0   ==>  ∫ -P'(x) dx = Rp {b3['pengikisan_laba']:,.0f}  (Pemborosan over-produksi)
+   * Total Integral Mutlak = Rp {b3['total_eksak']:,.0f}
 
-2. Titik Impas (Break-Even Point / BEP) di mana f(q) = 0:
-   -{a} * q^2 + {alpha:,.0f} * q - {c:,.0f} = 0
-   Diskriminan D = ({alpha:,.0f})^2 - 4 * (-{a}) * (-{c:,.0f}) = {res['D']:,.0f}
+----------------------------------------------------------------------------------------
+VI. INTEGRAL NILAI MUTLAK KUADRAT |P(x)| (POLA PDF B.4: ∫ |x² - 3x - 4| dx)
+----------------------------------------------------------------------------------------
+   ∫[0..{self.q_max}] |P(x)| dx = ∫[0..{self.q_max}] |-{a}x² + {alpha:,.0f}x - {c:,.0f}| dx
+{sub_txt}
+   * Total Area Surplus Laba (+) = Rp {b4['area_laba']:,.0f}  |  Total Area Defisit (-) = Rp {b4['area_rugi']:,.0f}
+   * Total Integral Mutlak ∫|P(x)| dx = Rp {b4['total_mutlak_eksak']:,.0f}
+   * Integral Netto ∫ P(x) dx = Rp {b4['integral_netto']:,.0f}  |  Rata-Rata Laba Domain = Rp {b4['rata_laba_domain']:,.0f}/hari
+
+----------------------------------------------------------------------------------------
+VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA PDF B.5)
+----------------------------------------------------------------------------------------
+   * Proyeksi Laba {a4['hari']} Hari L(t) = P* + ΔP(½ sin(ωt) + sin(2ωt)), u = 2ωt:
+     ∫[0..{a4['hari']}] L(t) dt = Rp {a4['laba_bulanan_musiman']:,.0f} (vs datar 30×P* = Rp {a4['laba_bulanan_datar']:,.0f})
+   * Limit Startup (FTC I + L'Hôpital):
+     lim[x->0] (1/x) ∫[0..x] MC(t) dt = lim[x->0] (2ax + b)/1 = Rp {b5['limit_eksak']:,.0f}/porsi
 """
-        if res["q_bep1"] is not None:
-            penjelasan += f"""   * Titik Impas Bawah (BEP 1) : q1 = {res['q_bep1']:.2f} porsi/hari
-   * Titik Impas Atas (BEP 2)  : q2 = {res['q_bep2']:.2f} porsi/hari
-   Rentang Produksi Menguntungkan (f(q) > 0): ({res['q_bep1']:.2f} ; {res['q_bep2']:.2f}) porsi/hari.
-
-3. Rekomendasi Manajerial Produksi:
-   * Target Produksi Terbaik : Tepat {round(q_opt)} porsi/hari untuk mencapai laba maksimal Rp {p_opt:,.0f}.
-   * Batas Aman Minimum      : Minimal {int(np.ceil(res['q_bep1']))} porsi/hari agar tidak mengalami kerugian.
-   * Batas Maksimal Kapasitas: Jangan memaksakan melebihi {int(np.floor(res['q_bep2']))} porsi/hari karena disekonomi biaya.
-"""
-        else:
-            penjelasan += "\n   Diskriminan negatif: Tidak ada titik impas real (usaha selalu rugi pada kombinasi parameter ini)."
-
         self.calc_text_label.configure(text=penjelasan)
 
     def _populate_table(self):
@@ -1273,22 +2151,22 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
                 "type": plot_type
             }
 
-        if mode == "Kurva Keuntungan P(q)":
+        if mode == "Kurva Keuntungan P(x)":
             ax = self.fig.add_subplot(111)
-            style_axis(ax, f"Fungsi Keuntungan Objektif: f(q) = -{a}q² + {p-b:,.0f}q - {c:,.0f}",
-                       "Jumlah Porsi Ketoprak per Hari (q)", "Nilai Fungsi Keuntungan f(q) (Rp)")
+            style_axis(ax, f"Fungsi Keuntungan P(x) = -{a}x² + {p-b:,.0f}x - {c:,.0f}",
+                       "Jumlah Porsi Produksi per Hari (x)", "Nilai Fungsi Keuntungan P(x) (Rp)")
 
-            ax.plot(q_arr, profit_arr, color="#10b981", linewidth=2.5, label="Fungsi Keuntungan f(q) = R(q) - C(q)")
-            ax.axhline(0, color="#ef4444" if not is_dark else "#f87171", linestyle=":", linewidth=1.5, label="Garis Impas (f(q) = 0)")
+            ax.plot(q_arr, profit_arr, color="#10b981", linewidth=2.5, label="Fungsi Keuntungan P(x) = R(x) - C(x)")
+            ax.axhline(0, color="#ef4444" if not is_dark else "#f87171", linestyle=":", linewidth=1.5, label="Garis Impas (P(x) = 0)")
 
-            ax.fill_between(q_arr, profit_arr, 0, where=(profit_arr >= 0), color="#10b981", alpha=0.15, label="Zona Untung (f(q) >= 0)")
-            ax.fill_between(q_arr, profit_arr, 0, where=(profit_arr < 0), color="#ef4444", alpha=0.15, label="Zona Rugi (f(q) < 0)")
+            ax.fill_between(q_arr, profit_arr, 0, where=(profit_arr >= 0), color="#10b981", alpha=0.15, label="Zona Untung (P(x) >= 0)")
+            ax.fill_between(q_arr, profit_arr, 0, where=(profit_arr < 0), color="#ef4444", alpha=0.15, label="Zona Rugi (P(x) < 0)")
 
             if 0 <= q_opt <= self.q_max:
                 ax.axvline(q_opt, color="#f59e0b", linestyle="--", linewidth=1.5, alpha=0.8)
-                ax.scatter([q_opt], [p_opt], color="#f59e0b", s=90, zorder=5, label=f"Titik Kritis qc: ({q_opt:.1f} porsi, f(qc)=Rp {p_opt:,.0f})")
+                ax.scatter([q_opt], [p_opt], color="#f59e0b", s=90, zorder=5, label=f"Titik Kritis x*: ({q_opt:.1f} porsi, P(x*)=Rp {p_opt:,.0f})")
                 ax.annotate(
-                    f"TITIK KRITIS (NILAI MAKSIMUM):\nqc = {q_opt:.1f} porsi | f'(qc) = 0\nf(qc) = Rp {p_opt:,.0f} (Maks Global)",
+                    f"TITIK KRITIS (NILAI MAKSIMUM):\nx* = {q_opt:.1f} porsi | P'(x*) = 0\nP(x*) = Rp {p_opt:,.0f} (Maks Global)",
                     xy=(q_opt, p_opt),
                     xytext=(q_opt + 6, p_opt * 0.85),
                     arrowprops=dict(facecolor="#f59e0b", shrink=0.08, width=1.5, headwidth=7),
@@ -1297,16 +2175,16 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
                 )
 
             ax.scatter([0], [-c], color="#ef4444", s=70, zorder=5, label=f"Nilai Min: (0, -Rp {c:,.0f})")
-            ax.annotate(f"NILAI MINIMUM:\nf(0) = -Rp {c:,.0f}", xy=(0, -c), xytext=(3, -c * 0.80),
+            ax.annotate(f"NILAI MINIMUM:\nP(0) = -Rp {c:,.0f}", xy=(0, -c), xytext=(3, -c * 0.80),
                         fontsize=8, color="#ef4444", fontweight="bold")
 
             if q_bep1 and 0 <= q_bep1 <= self.q_max:
                 ax.scatter([q_bep1], [0], color="#60a5fa", s=60, zorder=5)
-                ax.annotate(f"BEP 1: {q_bep1:.1f}\nf(q)=0", xy=(q_bep1, 0), xytext=(q_bep1 - 14, p_opt * 0.15),
+                ax.annotate(f"BEP 1: {q_bep1:.1f}\nP(x)=0", xy=(q_bep1, 0), xytext=(q_bep1 - 14, p_opt * 0.15),
                             fontsize=8, color="#60a5fa", fontweight="bold")
             if q_bep2 and 0 <= q_bep2 <= self.q_max:
                 ax.scatter([q_bep2], [0], color="#60a5fa", s=60, zorder=5)
-                ax.annotate(f"BEP 2: {q_bep2:.1f}\nf(q)=0", xy=(q_bep2, 0), xytext=(q_bep2 - 12, p_opt * 0.15),
+                ax.annotate(f"BEP 2: {q_bep2:.1f}\nP(x)=0", xy=(q_bep2, 0), xytext=(q_bep2 - 12, p_opt * 0.15),
                             fontsize=8, color="#60a5fa", fontweight="bold")
 
             ax.scatter([slider_q], [slider_p], color="#ec4899", s=70, zorder=6)
@@ -1315,20 +2193,20 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
             ax.legend(loc="upper right", framealpha=0.85, facecolor=bg_color, labelcolor=text_color, fontsize=8)
             create_hover_elements(ax, "profit")
 
-        elif mode == "Pendapatan R(q) vs Biaya C(q)":
+        elif mode == "Pendapatan R(x) vs Biaya C(x)":
             ax = self.fig.add_subplot(111)
-            style_axis(ax, "Perbandingan Pendapatan Total R(q) vs Total Biaya C(q)",
-                       "Jumlah Porsi Ketoprak per Hari (q)", "Rupiah (Rp)")
+            style_axis(ax, "Perbandingan Pendapatan Total R(x) vs Total Biaya C(x)",
+                       "Jumlah Porsi Produksi per Hari (x)", "Rupiah (Rp)")
 
-            ax.plot(q_arr, r_arr, color="#3b82f6", linewidth=2.5, label=f"Pendapatan R(q) = {p:,.0f}q")
-            ax.plot(q_arr, c_arr, color="#ef4444", linewidth=2.5, label=f"Biaya Total C(q) = {a}q² + {b:,.0f}q + {c:,.0f}")
+            ax.plot(q_arr, r_arr, color="#3b82f6", linewidth=2.5, label=f"Pendapatan R(x) = {p:,.0f}x")
+            ax.plot(q_arr, c_arr, color="#ef4444", linewidth=2.5, label=f"Biaya Total C(x) = {a}x² + {b:,.0f}x + {c:,.0f}")
 
             if 0 <= q_opt <= self.q_max:
                 ax.plot([q_opt, q_opt], [c_opt, r_opt], color="#10b981", linestyle="-", linewidth=3,
                         label=f"Gap Keuntungan Max: Rp {p_opt:,.0f}")
                 ax.scatter([q_opt, q_opt], [c_opt, r_opt], color="#10b981", s=60, zorder=5)
                 ax.annotate(
-                    f"JARAK MAKSIMAL (R - C):\nq* = {q_opt:.1f} porsi\nLaba = Rp {p_opt:,.0f}",
+                    f"JARAK MAKSIMAL (R - C):\nx* = {q_opt:.1f} porsi\nLaba = Rp {p_opt:,.0f}",
                     xy=(q_opt, (r_opt + c_opt) / 2),
                     xytext=(q_opt + 8, (r_opt + c_opt) / 2),
                     arrowprops=dict(facecolor="#10b981", shrink=0.08, width=1.5, headwidth=7),
@@ -1348,16 +2226,16 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
         elif mode == "Pendekatan Marjinal (MR vs MC)":
             ax = self.fig.add_subplot(111)
             style_axis(ax, f"Optimasi Marjinal: Pendapatan Marjinal (MR) vs Biaya Marjinal (MC)",
-                       "Jumlah Porsi Ketoprak per Hari (q)", "Rupiah per Porsi (Rp/porsi)")
+                       "Jumlah Porsi Produksi per Hari (x)", "Rupiah per Porsi (Rp/porsi)")
 
-            ax.plot(q_arr, mr_arr, color="#3b82f6", linewidth=2.5, label=f"Marginal Revenue: MR(q) = R'(q) = Rp {p:,.0f}")
-            ax.plot(q_arr, mc_arr, color="#ef4444", linewidth=2.5, label=f"Marginal Cost: MC(q) = C'(q) = {2*a:.0f}q + {b:,.0f}")
+            ax.plot(q_arr, mr_arr, color="#3b82f6", linewidth=2.5, label=f"Marginal Revenue: MR(x) = R'(x) = Rp {p:,.0f}")
+            ax.plot(q_arr, mc_arr, color="#ef4444", linewidth=2.5, label=f"Marginal Cost: MC(x) = C'(x) = {2*a:.0f}x + {b:,.0f}")
 
             if 0 <= q_opt <= self.q_max:
-                ax.scatter([q_opt], [p], color="#f59e0b", s=90, zorder=5, label=f"Titik MR = MC di q = {q_opt:.1f}")
+                ax.scatter([q_opt], [p], color="#f59e0b", s=90, zorder=5, label=f"Titik MR = MC di x = {q_opt:.1f}")
                 ax.axvline(q_opt, color="#f59e0b", linestyle="--", linewidth=1.5, alpha=0.8)
                 ax.annotate(
-                    f"KONDISI OPTIMUM (MR = MC):\nq* = {q_opt:.1f} porsi\nTarif Marjinal = Rp {p:,.0f}",
+                    f"KONDISI OPTIMUM (MR = MC):\nx* = {q_opt:.1f} porsi\nTarif Marjinal = Rp {p:,.0f}",
                     xy=(q_opt, p),
                     xytext=(q_opt + 6, p * 1.15),
                     arrowprops=dict(facecolor="#f59e0b", shrink=0.08, width=1.5, headwidth=7),
@@ -1377,7 +2255,7 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
             ax2 = self.fig.add_subplot(gs[1, 0])
             ax3 = self.fig.add_subplot(gs[1, 1])
 
-            style_axis(ax1, "Kurva Keuntungan P(q)", "Porsi (q)", "Keuntungan (Rp)")
+            style_axis(ax1, "Kurva Keuntungan P(x)", "Porsi (x)", "Keuntungan (Rp)")
             ax1.plot(q_arr, profit_arr, color="#10b981", linewidth=2)
             ax1.axhline(0, color="#ef4444", linestyle=":", linewidth=1)
             if 0 <= q_opt <= self.q_max:
@@ -1386,15 +2264,15 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
             ax1.scatter([slider_q], [slider_p], color="#ec4899", s=50, zorder=6)
             create_hover_elements(ax1, "profit")
 
-            style_axis(ax2, "Pendapatan R(q) vs Biaya C(q)", "Porsi (q)", "Rupiah (Rp)")
-            ax2.plot(q_arr, r_arr, color="#3b82f6", linewidth=2, label="R(q)")
-            ax2.plot(q_arr, c_arr, color="#ef4444", linewidth=2, label="C(q)")
+            style_axis(ax2, "Pendapatan R(x) vs Biaya C(x)", "Porsi (x)", "Rupiah (Rp)")
+            ax2.plot(q_arr, r_arr, color="#3b82f6", linewidth=2, label="R(x)")
+            ax2.plot(q_arr, c_arr, color="#ef4444", linewidth=2, label="C(x)")
             if 0 <= q_opt <= self.q_max:
                 ax2.plot([q_opt, q_opt], [c_opt, r_opt], color="#10b981", linewidth=2)
             ax2.legend(loc="upper left", fontsize=7, facecolor=bg_color, labelcolor=text_color)
             create_hover_elements(ax2, "rev_cost")
 
-            style_axis(ax3, "Marjinal MR vs MC", "Porsi (q)", "Rp/porsi")
+            style_axis(ax3, "Marjinal MR vs MC", "Porsi (x)", "Rp/porsi")
             ax3.plot(q_arr, mr_arr, color="#3b82f6", linewidth=2, label="MR")
             ax3.plot(q_arr, mc_arr, color="#ef4444", linewidth=2, label="MC")
             if 0 <= q_opt <= self.q_max:
@@ -1430,6 +2308,7 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
 
         res = self.calc_results
         q_opt = res["q_opt"]
+        p_opt = res["p_opt"]
         q_bep1 = res["q_bep1"]
         q_bep2 = res["q_bep2"]
         slider_q = self.slider_q
@@ -1448,22 +2327,22 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
             accent_col = "#f59e0b"
         elif is_near_zero:
             q = 0.0
-            label_tag = "TITIK UJUNG DOMAIN q=0 (NILAI MINIMUM MUTLAK)"
+            label_tag = "TITIK UJUNG DOMAIN x=0 (NILAI MINIMUM MUTLAK)"
             accent_col = "#ef4444"
         elif is_near_bep1:
             q = q_bep1
-            label_tag = "TITIK IMPAS BAWAH (BEP 1: f(q) = 0)"
+            label_tag = "TITIK IMPAS BAWAH (BEP 1: P(x) = 0)"
             accent_col = "#60a5fa"
         elif is_near_bep2:
             q = q_bep2
-            label_tag = "TITIK IMPAS ATAS (BEP 2: f(q) = 0)"
+            label_tag = "TITIK IMPAS ATAS (BEP 2: P(x) = 0)"
             accent_col = "#60a5fa"
         elif is_near_slider:
             q = slider_q
             label_tag = "TITIK PORSI SIMULASI AKTIF"
             accent_col = "#ec4899"
         else:
-            label_tag = "TITIK PENELUSURAN KURVA f(q)"
+            label_tag = "TITIK PENELUSURAN KURVA P(x)"
             accent_col = "#3b82f6"
 
         r = p * q
@@ -1501,24 +2380,24 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
             if is_near_opt:
                 text_info = (
                     f"[{label_tag}]\n"
-                    f"Titik Kritis qc: {q:.1f} porsi/hari (f'(qc) = 0)\n"
-                    f"Nilai Maksimum f(qc): Rp {profit:,.0f}\n"
-                    f"Fungsi Pendapatan R(qc): Rp {r:,.0f}\n"
-                    f"Fungsi Biaya C(qc): Rp {cost:,.0f}\n"
+                    f"Titik Kritis x*: {q:.1f} porsi/hari (P'(x*) = 0)\n"
+                    f"Nilai Maksimum P(x*): Rp {profit:,.0f}\n"
+                    f"Fungsi Pendapatan R(x*): Rp {r:,.0f}\n"
+                    f"Fungsi Biaya C(x*): Rp {cost:,.0f}\n"
                     f"Biaya Rata-Rata AC: Rp {ac:,.0f}/porsi\n"
-                    f"Turunan Pertama f'(qc): Rp 0/porsi (Kondisi Stasioner)\n"
-                    f"Turunan Kedua f''(qc): {-2.0*a:.0f} < 0 (Maks Mutlak Global)\n"
-                    f"Nilai Minimum Global: f(0) = -Rp {c:,.0f}\n"
+                    f"Turunan Pertama P'(x*): Rp 0/porsi (Kondisi Stasioner)\n"
+                    f"Turunan Kedua P''(x*): {-2.0*a:.0f} < 0 (Maks Mutlak Global)\n"
+                    f"Nilai Minimum Global: P(0) = -Rp {c:,.0f}\n"
                     f"Status: Puncak Tertinggi Nilai Maksimum Global"
                 ).replace(",", ".")
             elif is_near_zero:
                 text_info = (
                     f"[{label_tag}]\n"
-                    f"Porsi Produksi (q): 0,0 porsi/hari\n"
-                    f"Nilai Minimum f(0): -Rp {c:,.0f} (Defisit Biaya Tetap)\n"
+                    f"Porsi Produksi (x): 0,0 porsi/hari\n"
+                    f"Nilai Minimum P(0): -Rp {c:,.0f} (Defisit Biaya Tetap)\n"
                     f"Fungsi Pendapatan R(0): Rp 0\n"
                     f"Biaya Total C(0): Rp {c:,.0f} (Fixed Cost)\n"
-                    f"Turunan Pertama f'(0): +Rp {p - b:,.0f}/porsi (f' > 0)\n"
+                    f"Turunan Pertama P'(0): +Rp {p - b:,.0f}/porsi (P' > 0)\n"
                     f"Status: Nilai Minimum Mutlak pada Domain [0, {self.q_max}]"
                 ).replace(",", ".")
             elif is_near_bep1 or is_near_bep2:
@@ -1526,10 +2405,10 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Impas ({bep_name}): {q:.1f} porsi/hari\n"
-                    f"Nilai Fungsi f(q): Rp 0 (Pulang Pokok)\n"
+                    f"Nilai Fungsi P(x): Rp 0 (Pulang Pokok)\n"
                     f"Pendapatan = Biaya: Rp {r:,.0f}\n"
-                    f"Turunan Pertama f'(q): Rp {p_prime:,.0f}/porsi\n"
-                    f"Status: Ambang Batas Wilayah Keuntungan (f(q) = 0)"
+                    f"Turunan Pertama P'(x): Rp {p_prime:,.0f}/porsi\n"
+                    f"Status: Ambang Batas Wilayah Keuntungan (P(x) = 0)"
                 ).replace(",", ".")
             elif is_near_slider:
                 diff_s = q - q_opt
@@ -1537,25 +2416,25 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Terpilih: {q:.1f} porsi/hari ({s_note})\n"
-                    f"Fungsi Keuntungan f(q): Rp {profit:,.0f}\n"
-                    f"Pendapatan Total R: Rp {r:,.0f}\n"
-                    f"Biaya Total C: Rp {cost:,.0f}\n"
-                    f"Turunan Pertama f'(q): Rp {p_prime:,.0f}/porsi\n"
+                    f"Fungsi Keuntungan P(x): Rp {profit:,.0f}\n"
+                    f"Pendapatan Total R(x): Rp {r:,.0f}\n"
+                    f"Biaya Total C(x): Rp {cost:,.0f}\n"
+                    f"Turunan Pertama P'(x): Rp {p_prime:,.0f}/porsi\n"
                     f"Status: Posisi Slider Simulasi Interaktif"
                 ).replace(",", ".")
             else:
-                st_txt = "Zona Laba Positif (f(q) > 0)" if profit > 0 else ("Titik Impas (f(q) = 0)" if abs(profit) < 1 else "Zona Rugi Defisit (f(q) < 0)")
-                rec_txt = "Tambah porsi (f'(q) > 0)" if p_prime > 50 else ("Kurangi porsi (f'(q) < 0)" if p_prime < -50 else "Puncak laba (f'(q) = 0)")
+                st_txt = "Zona Laba Positif (P(x) > 0)" if profit > 0 else ("Titik Impas (P(x) = 0)" if abs(profit) < 1 else "Zona Rugi Defisit (P(x) < 0)")
+                rec_txt = "Tambah porsi (P'(x) > 0)" if p_prime > 50 else ("Kurangi porsi (P'(x) < 0)" if p_prime < -50 else "Puncak laba (P'(x) = 0)")
                 text_info = (
                     f"[{label_tag}]\n"
-                    f"Porsi Produksi (q): {q:.1f} porsi/hari\n"
-                    f"Fungsi Keuntungan f(q): Rp {profit:,.0f}\n"
-                    f"Pendapatan Total R(q): Rp {r:,.0f}\n"
-                    f"Biaya Total C(q): Rp {cost:,.0f}\n"
-                    f"Biaya Rata-Rata AC: Rp {ac:,.0f}/porsi\n"
-                    f"Turunan Pertama f'(q): Rp {p_prime:,.0f}/porsi\n"
-                    f"Turunan Kedua f''(q): {-2.0*a:.0f} (Konkaf)\n"
-                    f"Titik Kritis qc: {q_opt:.1f} | Nilai Maks: Rp {p_opt:,.0f}\n"
+                    f"Porsi Produksi (x): {q:.1f} porsi/hari\n"
+                    f"Fungsi Keuntungan P(x): Rp {profit:,.0f}\n"
+                    f"Pendapatan Total R(x): Rp {r:,.0f}\n"
+                    f"Biaya Total C(x): Rp {cost:,.0f}\n"
+                    f"Biaya Rata-Rata AC(x): Rp {ac:,.0f}/porsi\n"
+                    f"Turunan Pertama P'(x): Rp {p_prime:,.0f}/porsi\n"
+                    f"Turunan Kedua P''(x): {-2.0*a:.0f} (Konkaf)\n"
+                    f"Titik Kritis x*: {q_opt:.1f} | Nilai Maks: Rp {p_opt:,.0f}\n"
                     f"Status: {st_txt} | {rec_txt}"
                 ).replace(",", ".")
 
@@ -1585,14 +2464,14 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
             if is_near_opt:
                 text_info = (
                     f"[{label_tag}]\n"
-                    f"Porsi Optimum (q*): {q:.1f} porsi/hari\n"
-                    f"Pendapatan Total R(q*): Rp {r:,.0f}\n"
-                    f"Biaya Total C(q*): Rp {cost:,.0f}\n"
+                    f"Porsi Optimum (x*): {q:.1f} porsi/hari\n"
+                    f"Pendapatan Total R(x*): Rp {r:,.0f}\n"
+                    f"Biaya Total C(x*): Rp {cost:,.0f}\n"
                     f"Gap Laba Maksimum (R - C): Rp {gap:,.0f}\n"
                     f"Kemiringan Kurva: R' = C' = Rp {p:,.0f}\n"
                     f"Biaya Tetap FC: Rp {c:,.0f}\n"
                     f"Biaya Variabel VC: Rp {a*(q**2) + b*q:,.0f}\n"
-                    f"Status: Celah Vertikal R(q) - C(q) Terbesar"
+                    f"Status: Celah Vertikal R(x) - C(x) Terbesar"
                 ).replace(",", ".")
             elif is_near_bep1 or is_near_bep2:
                 text_info = (
@@ -1606,18 +2485,18 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Terpilih: {q:.1f} porsi/hari\n"
-                    f"Pendapatan Total R: Rp {r:,.0f}\n"
-                    f"Biaya Total C: Rp {cost:,.0f}\n"
+                    f"Pendapatan Total R(x): Rp {r:,.0f}\n"
+                    f"Biaya Total C(x): Rp {cost:,.0f}\n"
                     f"Celah Keuntungan: Rp {gap:,.0f}\n"
-                    f"Status: Posisi Slider Pada R(q) dan C(q)"
+                    f"Status: Posisi Slider Pada R(x) dan C(x)"
                 ).replace(",", ".")
             else:
                 st_rc = "Laba (R > C)" if gap > 0 else ("Impas (R = C)" if abs(gap) < 1 else "Rugi (C > R)")
                 text_info = (
                     f"[{label_tag}]\n"
-                    f"Porsi Produksi (q): {q:.1f} porsi/hari\n"
-                    f"Pendapatan R(q): Rp {r:,.0f}\n"
-                    f"Biaya Total C(q): Rp {cost:,.0f}\n"
+                    f"Porsi Produksi (x): {q:.1f} porsi/hari\n"
+                    f"Pendapatan R(x): Rp {r:,.0f}\n"
+                    f"Biaya Total C(x): Rp {cost:,.0f}\n"
                     f"Celah Keuntungan: Rp {gap:,.0f}\n"
                     f"Biaya Tetap FC: Rp {c:,.0f}\n"
                     f"Biaya Variabel VC: Rp {a*(q**2) + b*q:,.0f}\n"
@@ -1650,10 +2529,10 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
             if is_near_opt:
                 text_info = (
                     f"[{label_tag}]\n"
-                    f"Porsi Optimum (q*): {q:.1f} porsi/hari\n"
+                    f"Porsi Optimum (x*): {q:.1f} porsi/hari\n"
                     f"Marginal Revenue MR: Rp {mr:,.0f}/porsi\n"
                     f"Marginal Cost MC: Rp {mc:,.0f}/porsi\n"
-                    f"Laba Marjinal P'(q*): Rp 0/porsi\n"
+                    f"Laba Marjinal P'(x*): Rp 0/porsi\n"
                     f"Kondisi Stasioner: MR = MC Tercapai\n"
                     f"Status: Titik Balik Keuntungan Maksimal"
                 ).replace(",", ".")
@@ -1675,10 +2554,10 @@ Penerapan rumus f(q) dan metode diferensial memberikan solusi konkret bagi bisni
                     st_mc = "MR = MC: Kondisi laba optimum"
                 text_info = (
                     f"[{label_tag}]\n"
-                    f"Porsi Produksi (q): {q:.1f} porsi/hari\n"
+                    f"Porsi Produksi (x): {q:.1f} porsi/hari\n"
                     f"Marginal Revenue MR: Rp {mr:,.0f}/porsi\n"
                     f"Marginal Cost MC: Rp {mc:,.0f}/porsi\n"
-                    f"Laju Laba P'(q): Rp {diff:,.0f}/porsi\n"
+                    f"Laju Laba P'(x): Rp {diff:,.0f}/porsi\n"
                     f"Interpretasi: {st_mc}"
                 ).replace(",", ".")
 
