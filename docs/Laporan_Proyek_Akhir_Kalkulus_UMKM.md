@@ -6,15 +6,18 @@
 
 **Program Studi Informatika**  
 **Fakultas Teknik, Universitas Siliwangi**  
-**Tahun Akademik 2026/2027**
+**Tasikmalaya, 2026**
 
-### Disusun Oleh:
-1. **[Nama Anggota 1]** – NPM: [267006xxx] *(Koordinator & Penyusun Metodologi)*
-2. **[Nama Anggota 2]** – NPM: [267006xxx] *(Landasan Teori Kalkulus & Kajian Ekonomi)*
-3. **[Nama Anggota 3]** – NPM: [267006xxx] *(Pemodelan Matematika & Fungsi Biaya)*
-4. **[Nama Anggota 4]** – NPM: [267006xxx] *(Perhitungan Diferensial & Analisis Titik Kritis)*
-5. **[Nama Anggota 5]** – NPM: [267006xxx] *(Pengembangan Perangkat Lunak GUI Python & Visualisasi)*
-6. **[Nama Anggota 6]** – NPM: [267006xxx] *(Interpretasi Hasil, Kesimpulan, & Penyuntingan Laporan)*
+**Dosen Pengampu:**  
+Neng Ika Kurniati, S.Si., M.Cs.
+
+### Disusun Oleh (Kelompok 3):
+1. **Muhammad Fikri Haikal** – NPM: `267006111030`
+2. **Muhammad Amin Al Faruq** – NPM: `267006111104`
+3. **Hirzan Khairurrizal Ahza** – NPM: `267006111168`
+4. **Fahri Fauzira** – NPM: `267006111171`
+5. **Mochammad Fauzan Rizaldy** – NPM: `267006111173`
+6. **Anindi Nurmaleka** – NPM: `267006111176`
 
 ---
 
@@ -225,7 +228,7 @@ Berikut adalah visualisasi grafik yang dihasilkan oleh program:
 2. **Kurva Pendapatan $R(q)$ vs Biaya $C(q)$**: Memperlihatkan bahwa jarak vertikal terbesar antara garis linier $R(q)$ dan kurva kuadrat $C(q)$ terjadi persis saat $q = 70$.
 3. **Kurva Marjinal ($MR$ vs $MC$)**: Memperlihatkan bahwa garis konstan $MR = 15.000$ berpotongan dengan garis linier $MC = 100q + 8.000$ tepat pada absis $q = 70$.
 
-*(File visualisasi beresolusi tinggi tersedia dalam direktori: `grafik_keuntungan_maksimum.png`, `grafik_pendapatan_vs_biaya.png`, dan `grafik_marjinal_mr_mc.png`)*.
+*(File visualisasi beresolusi tinggi tersedia dalam folder `assets/`: `assets/grafik_keuntungan_maksimum.png`, `assets/grafik_pendapatan_vs_biaya.png`, dan `assets/grafik_marjinal_mr_mc.png`)*.
 
 ---
 

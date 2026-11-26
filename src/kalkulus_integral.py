@@ -25,17 +25,18 @@ import numpy as np
 def _trapz(y: np.ndarray, x: np.ndarray) -> float:
     if hasattr(np, "trapezoid"):
         return float(np.trapezoid(y, x))
-    return float(np.trapz(y, x))
+    trapz_fn = getattr(np, "trapz")
+    return float(trapz_fn(y, x))
 
 
 def _antideriv_profit(x: float, p: float, c: float, b: float, a: float) -> float:
-    """Antiturunan dari P(x) = -a*x^2 + (p - b)*x - c."""
+    """Antiturunan dari f(x) = -a*x^2 + (p - b)*x - c."""
     alpha = p - b
     return (-a / 3.0) * (x ** 3) + (alpha / 2.0) * (x ** 2) - c * x
 
 
 def _antideriv_marginal_profit(x: float, p: float, b: float, a: float) -> float:
-    """Antiturunan dari P'(x) = -2a*x + (p - b) adalah P(x) + c."""
+    """Antiturunan dari f'(x) = -2a*x + (p - b) adalah f(x) + c."""
     return -a * (x ** 2) + (p - b) * x
 
 
@@ -52,18 +53,26 @@ def hitung_integral_umkm(
     Menerapkan rumus-rumus integral dari PDF (B.3, B.4, A.3, B.1, A.4/B.2, B.5)
     secara langsung menggunakan parameter UMKM aktif (p, c, b, a, q_max).
     """
+    for name, val in (("p", p), ("c", c), ("b", b), ("a", a), ("q_max", q_max)):
+        if not isinstance(val, (int, float)) or not math.isfinite(float(val)):
+            raise ValueError(f"Parameter '{name}' harus berupa bilangan berhingga yang valid.")
+
     p = float(p)
     c = float(c)
     b = float(b)
     a = float(a)
-    q_max = float(q_max)
+    if a < 0:
+        raise ValueError("Koefisien kuadrat 'a' tidak boleh negatif.")
+    if hari_siklus <= 0:
+        raise ValueError("Parameter 'hari_siklus' harus lebih besar dari 0.")
+    q_max = max(1.0, float(q_max))
     alpha = p - b
     q_opt = (alpha / (2.0 * a)) if a > 0 else 0.0
     p_opt = -a * (q_opt ** 2) + alpha * q_opt - c
 
-    # 1. PENERAPAN B.3: Integral Nilai Mutlak Linier |P'(x)| = |MR - MC| pada [0, x_max]
+    # 1. PENERAPAN B.3: Integral Nilai Mutlak Linier |f'(x)| = |MR - MC| pada [0, x_max]
     q_split_lin = max(0.0, min(q_max, q_opt))
-    # Pada [0, q_split_lin], P'(x) >= 0 (jika alpha > 0); pada [q_split_lin, q_max], P'(x) <= 0
+    # Pada [0, q_split_lin], f'(x) >= 0 (jika alpha > 0); pada [q_split_lin, q_max], f'(x) <= 0
     if alpha >= 0:
         kenaikan_laba = _antideriv_marginal_profit(q_split_lin, p, b, a) - _antideriv_marginal_profit(0.0, p, b, a)
         pengikisan_laba = -(_antideriv_marginal_profit(q_max, p, b, a) - _antideriv_marginal_profit(q_split_lin, p, b, a))
@@ -76,7 +85,7 @@ def hitung_integral_umkm(
     y_abs_lin = np.abs(-2.0 * a * q_grid_lin + alpha)
     num_mutlak_lin = _trapz(y_abs_lin, q_grid_lin)
 
-    # 2. PENERAPAN B.4: Integral Nilai Mutlak Kuadrat |P(x)| pada [0, x_max]
+    # 2. PENERAPAN B.4: Integral Nilai Mutlak Kuadrat |f(x)| pada [0, x_max]
     D = (alpha ** 2) - (4.0 * a * c)
     roots_in_domain: List[float] = []
     q_bep1 = None
@@ -138,7 +147,7 @@ def hitung_integral_umkm(
     vc_langsung = a * (q_sub_hi ** 2) + b * q_sub_hi
 
     # 5. PENERAPAN A.4 & B.2: Proyeksi Akumulasi Laba 30 Hari dengan Gelombang Harian sin(wt) + sin(2wt)
-    # L(t) = P* + dP * (0.5*sin(w*t) + sin(2*w*t)) dengan w = 2*pi/7 (siklus mingguan 7 hari)
+    # L(t) = f* + df * (0.5*sin(w*t) + sin(2*w*t)) dengan w = 2*pi/7 (siklus mingguan 7 hari)
     omega = 2.0 * math.pi / 7.0
     delta_p = abs(p_opt) * amplitudo_pct
     T = float(hari_siklus)
@@ -234,6 +243,15 @@ def evaluasi_soal_pdf(kode: str, x_uji: float = 2.0) -> Dict[str, Any]:
     lengkap dengan verifikasi numerik (turunan antiturunan / integrasi numerik / konvergensi limit)
     serta data kurva untuk visualisasi Matplotlib.
     """
+    valid_codes = {"A.1", "A.2", "A.3", "A.4", "A.5", "B.1", "B.2", "B.3", "B.4", "B.5"}
+    if kode not in valid_codes:
+        raise ValueError(f"Kode soal PDF tidak dikenal: {kode}")
+
+    if not isinstance(x_uji, (int, float)) or not math.isfinite(float(x_uji)) or abs(float(x_uji)) > 100.0:
+        x_uji = 2.0
+    else:
+        x_uji = float(x_uji)
+
     if kode == "A.1":
         # Cek numerik pada titik x_uji (hindari singularitas): d/dx F(x) == f(x)
         f_fn = lambda x: x * ((x ** 2 + 2.0) ** 5)
@@ -246,8 +264,16 @@ def evaluasi_soal_pdf(kode: str, x_uji: float = 2.0) -> Dict[str, Any]:
         return {
             "kode": "A.1",
             "jenis": "tak_tentu",
+            "x_eval": x_uji,
             "soal": "∫ x (x² + 2)⁵ dx",
             "hasil_eksak": "(x² + 2)⁶ / 12 + C",
+            "latex_soal": r"$\int x(x^2 + 2)^5\,dx$",
+            "latex_hasil": r"$\frac{(x^2 + 2)^6}{12} + C$",
+            "latex_langkah": [
+                r"$\mathrm{1.\ Metode\ Substitusi}\ u:\quad u = x^2 + 2,\quad du = 2x\,dx \ \Rightarrow\ x\,dx = \frac{1}{2}\,du$",
+                r"$\mathrm{2.\ Substitusi:}\ \int u^5 \cdot \frac{1}{2}\,du = \frac{1}{2}\int u^5\,du = \frac{1}{2}\left(\frac{u^6}{6}\right) + C = \frac{u^6}{12} + C$",
+                r"$\mathrm{3.\ Kembalikan\ ke}\ x:\quad = \frac{(x^2 + 2)^6}{12} + C$",
+            ],
             "langkah": (
                 "1. Identifikasi metode: Substitusi u\n"
                 "   misal : u = x² + 2\n"
@@ -277,8 +303,16 @@ def evaluasi_soal_pdf(kode: str, x_uji: float = 2.0) -> Dict[str, Any]:
         return {
             "kode": "A.2",
             "jenis": "tak_tentu",
+            "x_eval": x_eval,
             "soal": "∫ (x - 1) / √(x² - 2x - 3) dx",
             "hasil_eksak": "√(x² - 2x - 3) + C",
+            "latex_soal": r"$\int \frac{x - 1}{\sqrt{x^2 - 2x - 3}}\,dx$",
+            "latex_hasil": r"$\sqrt{x^2 - 2x - 3} + C$",
+            "latex_langkah": [
+                r"$\mathrm{1.\ Misal}\ u = x^2 - 2x - 3,\quad du = (2x - 2)\,dx = 2(x - 1)\,dx \ \Rightarrow\ (x - 1)\,dx = \frac{1}{2}\,du$",
+                r"$\mathrm{2.\ Substitusi:}\ \int \frac{1}{\sqrt{u}}\cdot \frac{1}{2}\,du = \frac{1}{2}\int u^{-\frac{1}{2}}\,du = \frac{1}{2}\left(\frac{u^{\frac{1}{2}}}{\frac{1}{2}}\right) + C = u^{\frac{1}{2}} + C$",
+                r"$\mathrm{3.\ Kembalikan\ ke}\ x:\quad = \sqrt{x^2 - 2x - 3} + C\quad (\mathrm{domain:}\ x < -1\ \mathrm{atau}\ x > 3)$",
+            ],
             "langkah": (
                 "1. Identifikasi metode: Substitusi u (bentuk akar di penyebut)\n"
                 "   misal : u = x² - 2x - 3\n"
@@ -308,8 +342,16 @@ def evaluasi_soal_pdf(kode: str, x_uji: float = 2.0) -> Dict[str, Any]:
         return {
             "kode": "A.3",
             "jenis": "tak_tentu",
+            "x_eval": x_eval,
             "soal": "∫ (2x² - 5x + 6) / x dx",
             "hasil_eksak": "x² - 5x + 6 ln|x| + C",
+            "latex_soal": r"$\int \frac{2x^2 - 5x + 6}{x}\,dx$",
+            "latex_hasil": r"$x^2 - 5x + 6\ln|x| + C$",
+            "latex_langkah": [
+                r"$\mathrm{1.\ Pecah\ pecahan:}\ \int \left(\frac{2x^2}{x} - \frac{5x}{x} + \frac{6}{x}\right)dx = \int \left(2x - 5 + \frac{6}{x}\right)dx$",
+                r"$\mathrm{2.\ Pisah\ suku:}\ \int 2x\,dx - \int 5\,dx + \int \frac{6}{x}\,dx = 2\left(\frac{x^2}{2}\right) - 5x + 6\ln|x| + C$",
+                r"$\mathrm{3.\ Hasil\ akhir:}\ = x^2 - 5x + 6\ln|x| + C$",
+            ],
             "langkah": (
                 "1. Pecah setiap suku pembilang terhadap penyebut x:\n"
                 "   = ∫ ( 2x²/x - 5x/x + 6/x ) dx\n"
@@ -336,8 +378,16 @@ def evaluasi_soal_pdf(kode: str, x_uji: float = 2.0) -> Dict[str, Any]:
         return {
             "kode": "A.4",
             "jenis": "tak_tentu",
+            "x_eval": x_uji,
             "soal": "∫ (sin x + sin 2x - (1/2) sin x) dx",
             "hasil_eksak": "-(1/2) cos x - (1/2) cos 2x + C",
+            "latex_soal": r"$\int \left(\sin x + \sin 2x - \frac{1}{2}\sin x\right)dx$",
+            "latex_hasil": r"$-\frac{1}{2}\cos x - \frac{1}{2}\cos 2x + C$",
+            "latex_langkah": [
+                r"$\mathrm{1.\ Gabungkan\ suku\ sejenis:}\ \int \left(\frac{1}{2}\sin x + \sin 2x\right)dx = \frac{1}{2}\int \sin x\,dx + \int \sin 2x\,dx$",
+                r"$\mathrm{2.\ Substitusi}\ u = 2x,\ du = 2\,dx \ \Rightarrow\ \int \sin 2x\,dx = \frac{1}{2}\int \sin u\,du = -\frac{1}{2}\cos 2x$",
+                r"$\mathrm{3.\ Hasil\ akhir:}\ = -\frac{1}{2}\cos x - \frac{1}{2}\cos 2x + C$",
+            ],
             "langkah": (
                 "1. Gabungkan suku sejenis (sin x - 1/2 sin x = 1/2 sin x):\n"
                 "   = ∫ ( (1/2) sin x + sin 2x ) dx\n"
@@ -364,8 +414,16 @@ def evaluasi_soal_pdf(kode: str, x_uji: float = 2.0) -> Dict[str, Any]:
         return {
             "kode": "A.5",
             "jenis": "tak_tentu",
+            "x_eval": x_eval,
             "soal": "∫ (3 sec x tan x + csc² x) dx   (Nomor 6 di PDF)",
             "hasil_eksak": "3 sec x - cot x + C",
+            "latex_soal": r"$\int (3\sec x\tan x + \csc^2 x)\,dx$",
+            "latex_hasil": r"$3\sec x - \cot x + C$",
+            "latex_langkah": [
+                r"$\mathrm{1.\ Linearitas:}\ = 3\int \sec x\tan x\,dx + \int \csc^2 x\,dx$",
+                r"$\mathrm{2.\ Integral\ baku:}\ \int \sec x\tan x\,dx = \sec x \quad \mathrm{dan}\quad \int \csc^2 x\,dx = -\cot x$",
+                r"$\mathrm{3.\ Hasil\ akhir:}\ = 3\sec x - \cot x + C$",
+            ],
             "langkah": (
                 "1. Pisahkan dengan sifat linearitas integral:\n"
                 "   = 3 ∫ sec x tan x dx + ∫ csc² x dx\n"
@@ -389,6 +447,13 @@ def evaluasi_soal_pdf(kode: str, x_uji: float = 2.0) -> Dict[str, Any]:
             "jenis": "tentu",
             "soal": "∫[-1..2] 3x² √(x³ + 1) dx",
             "hasil_eksak": "18",
+            "latex_soal": r"$\int_{-1}^{2} 3x^2\sqrt{x^3 + 1}\,dx$",
+            "latex_hasil": r"$18$",
+            "latex_langkah": [
+                r"$\mathrm{1.\ Misal}\ u = x^3 + 1,\ du = 3x^2\,dx.\quad x=-1 \Rightarrow u=0,\quad x=2 \Rightarrow u=9$",
+                r"$\mathrm{2.\ Substitusi:}\ \int_{0}^{9}\sqrt{u}\,du = \int_{0}^{9} u^{\frac{1}{2}}\,du = \left[\frac{u^{3/2}}{3/2}\right]_{0}^{9} = \left[\frac{2}{3}u^{\frac{3}{2}}\right]_{0}^{9}$",
+                r"$\mathrm{3.\ Evaluasi:}\ = \frac{2}{3}(9)^{\frac{3}{2}} - \frac{2}{3}(0)^{\frac{3}{2}} = \frac{2}{3}(27) - 0 = 18$",
+            ],
             "langkah": (
                 "1. Substitusi u dan ubah batas integrasi:\n"
                 "   misal : u = x³ + 1  ==>  du = 3x² dx\n"
@@ -417,6 +482,13 @@ def evaluasi_soal_pdf(kode: str, x_uji: float = 2.0) -> Dict[str, Any]:
             "jenis": "tentu",
             "soal": "∫[0..π/4] sin²(2x) · cos(2x) dx",
             "hasil_eksak": "1/6 (≈ 0.166667)",
+            "latex_soal": r"$\int_{0}^{\pi/4} \sin^2(2x)\cos(2x)\,dx$",
+            "latex_hasil": r"$\frac{1}{6}\ (\approx 0{,}166667)$",
+            "latex_langkah": [
+                r"$\mathrm{1.\ Misal}\ u = \sin(2x),\ du = 2\cos(2x)\,dx \ \Rightarrow\ \cos(2x)\,dx = \frac{1}{2}\,du.\quad x=0 \Rightarrow u=0,\ x=\frac{\pi}{4} \Rightarrow u=1$",
+                r"$\mathrm{2.\ Substitusi:}\ \frac{1}{2}\int_{0}^{1} u^2\,du = \frac{1}{2}\left[\frac{u^3}{3}\right]_{0}^{1} = \frac{1}{6}\left[u^3\right]_{0}^{1}$",
+                r"$\mathrm{3.\ Evaluasi:}\ = \frac{1}{6}(1)^3 - \frac{1}{6}(0)^3 = \frac{1}{6}$",
+            ],
             "langkah": (
                 "1. Substitusi u dan ubah batas integrasi:\n"
                 "   misal : u = sin(2x)\n"
@@ -446,6 +518,13 @@ def evaluasi_soal_pdf(kode: str, x_uji: float = 2.0) -> Dict[str, Any]:
             "jenis": "tentu",
             "soal": "∫[0..6] |x - 4| dx",
             "hasil_eksak": "10",
+            "latex_soal": r"$\int_{0}^{6} |x - 4|\,dx$",
+            "latex_hasil": r"$10$",
+            "latex_langkah": [
+                r"$\mathrm{1.\ Pembuat\ nol:}\ x - 4 = 0 \Rightarrow x = 4.\quad [0,4]:\ |x-4| = 4 - x,\quad [4,6]:\ |x-4| = x - 4$",
+                r"$\mathrm{2.\ Pecah:}\ \int_{0}^{4}(4 - x)\,dx + \int_{4}^{6}(x - 4)\,dx = \left[4x - \frac{x^2}{2}\right]_{0}^{4} + \left[\frac{x^2}{2} - 4x\right]_{4}^{6}$",
+                r"$\mathrm{3.\ Hasil:}\ = (16 - 8) + \left[(18 - 24) - (8 - 16)\right] = 8 + 2 = 10$",
+            ],
             "langkah": (
                 "1. Cari pembuat nol di dalam mutlak:\n"
                 "   x - 4 = 0  ==>  x = 4\n"
@@ -474,6 +553,13 @@ def evaluasi_soal_pdf(kode: str, x_uji: float = 2.0) -> Dict[str, Any]:
             "jenis": "tentu",
             "soal": "∫[0..8] |x² - 3x - 4| dx",
             "hasil_eksak": "80",
+            "latex_soal": r"$\int_{0}^{8} |x^2 - 3x - 4|\,dx$",
+            "latex_hasil": r"$80$",
+            "latex_langkah": [
+                r"$\mathrm{1.\ Akar:}\ (x - 4)(x + 1) = 0 \Rightarrow x = 4,\ x = -1.\quad [0,4]:\ -x^2+3x+4,\quad [4,8]:\ x^2-3x-4$",
+                r"$\mathrm{2.\ Integral\ 1:}\ \left[-\frac{x^3}{3} + \frac{3x^2}{2} + 4x\right]_{0}^{4} = -\frac{64}{3} + 24 + 16 = \frac{56}{3}$",
+                r"$\mathrm{3.\ Integral\ 2:}\ \left[\frac{x^3}{3} - \frac{3x^2}{2} - 4x\right]_{4}^{8} = \frac{128}{3} - \left(-\frac{56}{3}\right) = \frac{184}{3} \ \Rightarrow\ \frac{56}{3} + \frac{184}{3} = \frac{240}{3} = 80$",
+            ],
             "langkah": (
                 "1. Cari akar pembuat nol x² - 3x - 4 = 0:\n"
                 "   (x - 4)(x + 1) = 0  ==>  x = 4,  x = -1\n"
@@ -510,6 +596,13 @@ def evaluasi_soal_pdf(kode: str, x_uji: float = 2.0) -> Dict[str, Any]:
         "jenis": "limit",
         "soal": "lim[x->0]  1 / (6x³) · ∫[0..x] ( t² / (t⁴ + 1) ) dt",
         "hasil_eksak": "1/18 (≈ 0.055556)",
+        "latex_soal": r"$\lim_{x \to 0} \frac{1}{6x^3}\int_{0}^{x}\frac{t^2}{t^4 + 1}\,dt$",
+        "latex_hasil": r"$\frac{1}{18}\ (\approx 0{,}055556)$",
+        "latex_langkah": [
+            r"$\mathrm{1.\ FTC\ I\ (pembilang):}\ \frac{d}{dx}\left(\int_{0}^{x}\frac{t^2}{t^4 + 1}\,dt\right) = \frac{x^2}{x^4 + 1},\qquad \mathrm{Penyebut:}\ \frac{d}{dx}(6x^3) = 18x^2$",
+            r"$\mathrm{2.\ Aturan\ L'Hopital:}\ \lim_{x \to 0}\frac{\frac{x^2}{x^4 + 1}}{18x^2} = \lim_{x \to 0}\frac{1}{18(x^4 + 1)}$",
+            r"$\mathrm{3.\ Substitusi}\ x=0:\quad = \frac{1}{18(0^4 + 1)} = \frac{1}{18(1)} = \frac{1}{18}$",
+        ],
         "langkah": (
             "1. Identifikasi bentuk tak tentu 0/0 saat x -> 0, gunakan FTC I + Aturan L'Hôpital:\n"
             "   * Turunan pembilang (Teorema Dasar Kalkulus I):\n"

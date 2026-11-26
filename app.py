@@ -1,24 +1,32 @@
+import io
 import sys
 import os
 import math
+from typing import Any, Literal
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends._backend_tk import NavigationToolbar2Tk
 from matplotlib.figure import Figure
+from matplotlib.ticker import FuncFormatter
 import customtkinter as ctk
 
-from tasik_market_data import (
+AnchorType = Literal["nw", "n", "ne", "w", "center", "e", "sw", "s", "se"]
+
+from src.tasik_market_data import (
     KATALOG_KOMODITAS_TASIK,
     KONDISI_PASAR_CONFIG,
     WILAYAH_CONFIG,
     hitung_estimasi_umkm,
 )
-from kalkulus_integral import (
+from src.kalkulus_integral import (
     daftar_soal_pdf,
     evaluasi_soal_pdf,
     hitung_integral_umkm,
@@ -39,21 +47,21 @@ class KalkulusUMKMApp(ctk.CTk):
         self.presets = {
             "UMKM Ketoprak (Harian Tasikmalaya)": {
                 "p": 15000.0,
-                "c": 33000.0,
+                "c": 14500.0,
                 "b": 6700.0,
                 "a": 60.0,
                 "q_max": 140
             },
             "UMKM Warung Nasi Goreng": {
                 "p": 18000.0,
-                "c": 48000.0,
+                "c": 17500.0,
                 "b": 8200.0,
                 "a": 50.0,
                 "q_max": 200
             },
             "UMKM Kopi Susu Kekinian": {
                 "p": 22000.0,
-                "c": 68000.0,
+                "c": 21000.0,
                 "b": 6800.0,
                 "a": 75.0,
                 "q_max": 205
@@ -68,25 +76,27 @@ class KalkulusUMKMApp(ctk.CTk):
             },
             "Kustom Parameter Sendiri": {
                 "p": 15000.0,
-                "c": 35000.0,
+                "c": 14500.0,
                 "b": 6700.0,
                 "a": 60.0,
                 "q_max": 140
             }
         }
 
-        self.p = 15000.0
-        self.c = 33000.0
-        self.b = 6700.0
-        self.a = 60.0
-        self.q_max = 140
-        self.slider_q = 69.0
+        self.p: float = 15000.0
+        self.c: float = 14500.0
+        self.b: float = 6700.0
+        self.a: float = 60.0
+        self.q_max: int = 140
+        self.slider_q: float = 69.0
         self.sidebar_width = 380
         self._syncing_from_p = False
         self._last_p_text = "15000"
         self._price_debounce_id = None
         self._pending_price_autofill = False
         self._manual_override = False
+        self._last_hover_q: float | None = None
+        self._last_hover_ax: Any = None
         self.wilayah = "Kota Tasikmalaya (Pasar Cikurubuk)"
         self.kondisi_pasar = "Harga Normal Pasar (Rata-rata)"
         self.auto_tasik_var = tk.BooleanVar(value=True)
@@ -99,10 +109,37 @@ class KalkulusUMKMApp(ctk.CTk):
 
         self.calc_results = {}
         self.hover_items = {}
+        self._math_cache: dict[tuple, ctk.CTkImage] = {}
+        self._paper_desks: list[ctk.CTkScrollableFrame] = []
+        self._reporting_callback_err = False
 
         self._setup_layout()
         self._calculate_calculus_model()
         self._update_all_views()
+
+    def report_callback_exception(self, exc, val, tb):
+        import traceback
+        traceback.print_exception(exc, val, tb, file=sys.stderr)
+        if not self._reporting_callback_err:
+            self._reporting_callback_err = True
+            try:
+                messagebox.showerror(
+                    "Kesalahan Aplikasi",
+                    f"Terjadi kesalahan saat memproses aksi:\n{val}",
+                )
+            except Exception:
+                pass
+            finally:
+                self._reporting_callback_err = False
+
+    def destroy(self):
+        if getattr(self, "_price_debounce_id", None) is not None:
+            try:
+                self.after_cancel(self._price_debounce_id)
+            except Exception:
+                pass
+            self._price_debounce_id = None
+        super().destroy()
 
     def _setup_layout(self):
         self.grid_rowconfigure(1, weight=1)
@@ -216,7 +253,7 @@ class KalkulusUMKMApp(ctk.CTk):
         self.entries = {}
         fields = [
             ("p", "Harga Jual (p)", "Rupiah per porsi (ketik harga, modal harian terisi)", "15000"),
-            ("c", "Biaya Tetap Harian (c / FC)", "Sewa, pemakaian LPG, listrik & alat per hari", "33000"),
+            ("c", "Biaya Tetap Harian (c / FC)", "Pecahan per hari: sewa/30hr, LPG/5-6hr, listrik/30hr, alat", "14500"),
             ("b", "Modal Bahan / Porsi (b)", "Belanja harian non-borongan pasar Tasik (Rp/porsi)", "6700"),
             ("a", "Koef. Kuadrat (a)", "Disekonomi biaya (Rp/porsi²)", "60"),
             ("q_max", "Batas Rentang Porsi", "Maksimal porsi di grafik", "140")
@@ -378,7 +415,7 @@ class KalkulusUMKMApp(ctk.CTk):
 
         self.live_profit_lbl = ctk.CTkLabel(
             self.live_card,
-            text="Fungsi Laba P(x): Rp 254.040",
+            text="Fungsi Laba f(x): Rp 254.040",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color="#10b981",
             wraplength=calc_w,
@@ -388,7 +425,7 @@ class KalkulusUMKMApp(ctk.CTk):
 
         self.live_mp_lbl = ctk.CTkLabel(
             self.live_card,
-            text="Laju Laba P'(x): Rp 0/porsi",
+            text="Laju Laba f'(x): Rp 0/porsi",
             font=ctk.CTkFont(size=10),
             text_color=("gray40", "gray70"),
             wraplength=calc_w,
@@ -481,26 +518,23 @@ class KalkulusUMKMApp(ctk.CTk):
         for i in range(4):
             self.summary_bar.grid_columnconfigure(i, weight=1)
 
-        self.card_q_opt = self._make_metric_card(self.summary_bar, 0, "Titik Kritis (x*)", "69,2 porsi", "Syarat Stasioner P'(x) = 0", "#3b82f6")
-        self.card_profit_max = self._make_metric_card(self.summary_bar, 1, "Nilai Maksimum P(x*)", "Rp 254.042", "Laba harian puncak mutlak", "#10b981")
-        self.card_bep = self._make_metric_card(self.summary_bar, 2, "Nilai Minimum & BEP", "-Rp 33.000", "Batas rentang laba P(x) >= 0", "#f59e0b")
-        self.card_test1 = self._make_metric_card(self.summary_bar, 3, "Uji Turunan Pertama", "P'(x): (+) -> 0 -> (-)", "Kiri naik, kanan turun (Maks)", "#8b5cf6")
+        self.card_q_opt = self._make_metric_card(self.summary_bar, 0, "Titik Kritis (x*)", "69,2 porsi", "Syarat Stasioner f'(x) = 0", "#3b82f6")
+        self.card_profit_max = self._make_metric_card(self.summary_bar, 1, "Nilai Maksimum f(x*)", "Rp 254.042", "Laba harian puncak mutlak", "#10b981")
+        self.card_bep = self._make_metric_card(self.summary_bar, 2, "Nilai Minimum & BEP", "-Rp 33.000", "Batas rentang laba f(x) >= 0", "#f59e0b")
+        self.card_test1 = self._make_metric_card(self.summary_bar, 3, "Uji Turunan Pertama", "f'(x): (+) -> 0 -> (-)", "Kiri naik, kanan turun (Maks)", "#8b5cf6")
 
     def _make_metric_card(self, parent, col, title, value, subtitle, accent_color):
         card = ctk.CTkFrame(parent, fg_color=("gray90", "#1e1e24"), corner_radius=8, border_width=1, border_color=("gray75", "#334155"))
         card.grid(row=0, column=col, padx=5, pady=2, sticky="nsew")
 
-        strip = ctk.CTkFrame(card, height=4, fg_color=accent_color, corner_radius=2)
-        strip.pack(fill="x", side="top")
-
         t_lbl = ctk.CTkLabel(card, text=title, font=ctk.CTkFont(size=11, weight="bold"), text_color=("gray30", "gray70"))
-        t_lbl.pack(anchor="w", padx=10, pady=(6, 0))
+        t_lbl.pack(anchor="w", padx=10, pady=(10, 0))
 
         v_lbl = ctk.CTkLabel(card, text=value, font=ctk.CTkFont(size=15, weight="bold"), text_color=accent_color)
         v_lbl.pack(anchor="w", padx=10, pady=(1, 0))
 
         s_lbl = ctk.CTkLabel(card, text=subtitle, font=ctk.CTkFont(size=9), text_color=("gray40", "gray60"))
-        s_lbl.pack(anchor="w", padx=10, pady=(0, 6))
+        s_lbl.pack(anchor="w", padx=10, pady=(0, 8))
 
         return {"card": card, "val_lbl": v_lbl, "sub_lbl": s_lbl}
 
@@ -521,14 +555,14 @@ class KalkulusUMKMApp(ctk.CTk):
         self.graph_mode = ctk.CTkSegmentedButton(
             ctrl_bar,
             values=[
-                "Kurva Keuntungan P(x)",
+                "Kurva Keuntungan f(x)",
                 "Pendapatan R(x) vs Biaya C(x)",
                 "Pendekatan Marjinal (MR vs MC)",
                 "Multi-Grafik (3-in-1 Dashboard)"
             ],
             command=self._on_graph_mode_change
         )
-        self.graph_mode.set("Kurva Keuntungan P(x)")
+        self.graph_mode.set("Kurva Keuntungan f(x)")
         self.graph_mode.grid(row=0, column=1, sticky="ew", padx=15)
         for i in range(4):
             self.graph_mode.grid_columnconfigure(i, weight=1, uniform="mode_tabs")
@@ -563,21 +597,171 @@ class KalkulusUMKMApp(ctk.CTk):
         self.toolbar = NavigationToolbar2Tk(self.canvas, self.toolbar_frame)
         self.toolbar.update()
 
+    def _paper_desk_color(self) -> tuple[str, str]:
+        return ("#e2e8f0", "#0f172a")
+
+    def _create_paper_sheet_frame(self, parent_grid, row: int, max_w: int = 720, inner_w: int = 640) -> ctk.CTkFrame:
+        parent_grid.grid_columnconfigure(0, weight=1)
+        paper_card = ctk.CTkFrame(
+            parent_grid,
+            fg_color="#ffffff",
+            corner_radius=10,
+            border_width=1,
+            border_color="#cbd5e1",
+            width=max_w,
+        )
+        paper_card.grid(row=row, column=0, padx=18, pady=16, sticky="n")
+        body = ctk.CTkFrame(paper_card, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=26, pady=22)
+        setattr(body, "_paper_inner_w", inner_w)
+        ctk.CTkFrame(body, width=inner_w, height=1, fg_color="transparent").pack(fill="x")
+        return body
+
+    @staticmethod
+    def _clear_paper_body(body: ctk.CTkFrame):
+        for child in list(body.winfo_children()):
+            child.destroy()
+        inner_w = getattr(body, "_paper_inner_w", 640)
+        ctk.CTkFrame(body, width=inner_w, height=1, fg_color="transparent").pack(fill="x")
+
+    def _render_math_image(self, lines: list[str], bg: str = "#f8fafc", fg: str = "#0f172a", fontsize: float = 11.0, max_w: int = 595) -> ctk.CTkImage:
+        key = (tuple(lines), bg, fg, fontsize, max_w)
+        if key in self._math_cache:
+            return self._math_cache[key]
+
+        n = max(1, len(lines))
+        buf = None
+        try:
+            fig = Figure(figsize=(6.8, max(0.55, 0.45 * n)), dpi=118)
+            fig.patch.set_facecolor(bg)
+            FigureCanvasAgg(fig)
+            for idx, line in enumerate(lines):
+                y = 1.0 - (idx + 0.5) / n
+                fig.text(
+                    0.01, y, line, fontsize=fontsize, va="center", ha="left",
+                    color=fg, fontfamily="Times New Roman", math_fontfamily="stix"
+                )
+
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=118, bbox_inches="tight", pad_inches=0.08, facecolor=bg)
+            buf.seek(0)
+            pil_img = Image.open(buf).copy()
+        except Exception:
+            fallback_txt = "\n".join(line.replace("$", "") for line in lines) or "-"
+            pil_img = Image.new("RGB", (max_w, max(44, 24 * n + 14)), bg)
+            draw = ImageDraw.Draw(pil_img)
+            draw.multiline_text((8, 6), fallback_txt, fill=fg, font=ImageFont.load_default(), spacing=6)
+        finally:
+            if buf is not None:
+                buf.close()
+
+        w, h = pil_img.size
+        if w > max_w:
+            scale = max_w / float(w)
+            disp_w, disp_h = max_w, max(1, int(round(h * scale)))
+        else:
+            disp_w, disp_h = w, h
+
+        ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(disp_w, disp_h))
+        if len(self._math_cache) >= 160:
+            self._math_cache.clear()
+        self._math_cache[key] = ctk_img
+        return ctk_img
+
+    def _add_paper_header(self, body: ctk.CTkFrame, title: str, subtitle: str, chips: list[str] | None = None):
+        ctk.CTkLabel(
+            body, text=title, font=ctk.CTkFont(family="Times New Roman", size=16, weight="bold"),
+            text_color="#0f172a", justify="left", anchor="w", wraplength=625
+        ).pack(anchor="w", pady=(0, 4))
+        ctk.CTkLabel(
+            body, text=subtitle, font=ctk.CTkFont(family="Times New Roman", size=12),
+            text_color="#475569", justify="left", anchor="w", wraplength=625
+        ).pack(anchor="w", pady=(0, 10))
+
+        if chips:
+            chip_row = ctk.CTkFrame(body, fg_color="transparent")
+            chip_row.pack(anchor="w", fill="x", pady=(0, 8))
+            for ch in chips:
+                pill = ctk.CTkFrame(chip_row, fg_color="#eff6ff", corner_radius=6, border_width=1, border_color="#bfdbfe")
+                pill.pack(side="left", padx=(0, 5), pady=2)
+                ctk.CTkLabel(
+                    pill, text=ch, font=ctk.CTkFont(family="Times New Roman", size=10, weight="bold"),
+                    text_color="#1e40af"
+                ).pack(padx=7, pady=3)
+
+        ctk.CTkFrame(body, width=10, height=2, fg_color="#1e3a8a").pack(fill="x", pady=(2, 12))
+
+    def _add_math_box(self, body: ctk.CTkFrame, lines: list[str], bg: str = "#f8fafc", accent: str = "#2563eb", fontsize: float = 11.0):
+        box = ctk.CTkFrame(body, fg_color=bg, corner_radius=6, border_width=1, border_color="#cbd5e1", height=10)
+        box.pack(fill="x", pady=(4, 10))
+        img = self._render_math_image(lines, bg=bg, fontsize=fontsize)
+        lbl = ctk.CTkLabel(box, text="", image=img, anchor="w")
+        lbl.pack(side="left", padx=14, pady=8)
+
+    def _add_callout_box(self, body: ctk.CTkFrame, title: str, text: str, tone: str = "slate"):
+        palette = {
+            "emerald": ("#ecfdf5", "#6ee7b7", "#065f46", "#064e3b"),
+            "amber": ("#fffbeb", "#fcd34d", "#92400e", "#78350f"),
+            "blue": ("#eff6ff", "#93c5fd", "#1e40af", "#1e3a8a"),
+            "slate": ("#f1f5f9", "#cbd5e1", "#0f172a", "#334155"),
+        }
+        bg, brd, t_col, b_col = palette.get(tone, palette["slate"])
+        card = ctk.CTkFrame(body, fg_color=bg, corner_radius=6, border_width=1, border_color=brd, height=10)
+        card.pack(fill="x", pady=(4, 10))
+        ctk.CTkLabel(
+            card, text=title, font=ctk.CTkFont(family="Times New Roman", size=12, weight="bold"),
+            text_color=t_col, anchor="w", justify="left", wraplength=605
+        ).pack(anchor="w", padx=12, pady=(8, 2))
+        ctk.CTkLabel(
+            card, text=text, font=ctk.CTkFont(family="Times New Roman", size=12),
+            text_color=b_col, anchor="w", justify="left", wraplength=605
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+
+    def _add_paper_section(
+        self,
+        body: ctk.CTkFrame,
+        heading: str,
+        prose: str | None = None,
+        math_lines: list[str] | None = None,
+        bullets: list[str] | None = None,
+        callout: dict[str, str] | None = None,
+        accent: str = "#1e3a8a",
+    ):
+        sec = ctk.CTkFrame(body, fg_color="transparent")
+        sec.pack(fill="x", pady=(4, 12))
+        ctk.CTkLabel(
+            sec, text=heading, font=ctk.CTkFont(family="Times New Roman", size=14, weight="bold"),
+            text_color=accent, anchor="w", justify="left", wraplength=625
+        ).pack(anchor="w", pady=(0, 2))
+        ctk.CTkFrame(sec, width=10, height=1, fg_color="#cbd5e1").pack(fill="x", pady=(3, 8))
+
+        if prose:
+            ctk.CTkLabel(
+                sec, text=prose, font=ctk.CTkFont(family="Times New Roman", size=12),
+                text_color="#1e293b", anchor="w", justify="left", wraplength=625
+            ).pack(anchor="w", pady=(0, 6))
+
+        if math_lines:
+            self._add_math_box(sec, math_lines, accent=accent)
+
+        if bullets:
+            for item in bullets:
+                ctk.CTkLabel(
+                    sec, text=f"•  {item}", font=ctk.CTkFont(family="Times New Roman", size=12),
+                    text_color="#334155", anchor="w", justify="left", wraplength=610
+                ).pack(anchor="w", padx=(8, 0), pady=2)
+
+        if callout:
+            self._add_callout_box(sec, callout["title"], callout["text"], callout.get("tone", "slate"))
+
     def _setup_tab_kalkulus(self):
         self.tab_kalkulus.grid_rowconfigure(0, weight=1)
         self.tab_kalkulus.grid_columnconfigure(0, weight=1)
 
-        self.calc_scroll = ctk.CTkScrollableFrame(self.tab_kalkulus)
+        self.calc_scroll = ctk.CTkScrollableFrame(self.tab_kalkulus, fg_color=self._paper_desk_color())
         self.calc_scroll.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
-
-        self.calc_text_label = ctk.CTkLabel(
-            self.calc_scroll,
-            text="",
-            font=ctk.CTkFont(family="Consolas", size=12),
-            justify="left",
-            anchor="w"
-        )
-        self.calc_text_label.pack(fill="both", expand=True, padx=15, pady=15)
+        self._paper_desks.append(self.calc_scroll)
+        self.calc_paper_body = self._create_paper_sheet_frame(self.calc_scroll, row=0)
 
     def _setup_tab_integral(self):
         self.tab_integral.grid_rowconfigure(1, weight=1)
@@ -604,9 +788,10 @@ class KalkulusUMKMApp(ctk.CTk):
         self.int_container.grid_columnconfigure(0, weight=1)
 
         # Panel 1: Penerapan Integral di UMKM mengikuti rumus PDF
-        self.int_umkm_scroll = ctk.CTkScrollableFrame(self.int_container)
+        self.int_umkm_scroll = ctk.CTkScrollableFrame(self.int_container, fg_color=self._paper_desk_color())
         self.int_umkm_scroll.grid(row=0, column=0, sticky="nsew")
         self.int_umkm_scroll.grid_columnconfigure(0, weight=1)
+        self._paper_desks.append(self.int_umkm_scroll)
 
         umkm_plot_box = ctk.CTkFrame(self.int_umkm_scroll, fg_color=("gray95", "#18181b"), corner_radius=8)
         umkm_plot_box.grid(row=0, column=0, sticky="ew", padx=6, pady=(4, 8))
@@ -616,19 +801,13 @@ class KalkulusUMKMApp(ctk.CTk):
         self.int_umkm_canvas = FigureCanvasTkAgg(self.int_umkm_fig, master=umkm_plot_box)
         self.int_umkm_canvas.get_tk_widget().grid(row=0, column=0, sticky="ew")
 
-        self.int_umkm_text_lbl = ctk.CTkLabel(
-            self.int_umkm_scroll,
-            text="",
-            font=ctk.CTkFont(family="Consolas", size=11),
-            justify="left",
-            anchor="w",
-        )
-        self.int_umkm_text_lbl.grid(row=1, column=0, sticky="nsew", padx=12, pady=(4, 14))
+        self.int_umkm_paper_body = self._create_paper_sheet_frame(self.int_umkm_scroll, row=1)
 
         # Panel 2: Kalkulator & Verifikator 10 Soal Rumus PDF (A.1-A.5 & B.1-B.5)
-        self.int_pdf_frame = ctk.CTkScrollableFrame(self.int_container)
+        self.int_pdf_frame = ctk.CTkScrollableFrame(self.int_container, fg_color=self._paper_desk_color())
         self.int_pdf_frame.grid(row=0, column=0, sticky="nsew")
         self.int_pdf_frame.grid_columnconfigure(0, weight=1)
+        self._paper_desks.append(self.int_pdf_frame)
 
         pdf_top = ctk.CTkFrame(self.int_pdf_frame, fg_color=("gray90", "#1e1e24"), corner_radius=8)
         pdf_top.grid(row=0, column=0, sticky="ew", padx=6, pady=(4, 8))
@@ -668,14 +847,7 @@ class KalkulusUMKMApp(ctk.CTk):
         )
         ver_btn.grid(row=0, column=4, padx=(4, 10), pady=8)
 
-        self.pdf_result_lbl = ctk.CTkLabel(
-            self.int_pdf_frame,
-            text="",
-            font=ctk.CTkFont(family="Consolas", size=11),
-            justify="left",
-            anchor="w",
-        )
-        self.pdf_result_lbl.grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 8))
+        self.int_pdf_paper_body = self._create_paper_sheet_frame(self.int_pdf_frame, row=1)
 
         pdf_plot_box = ctk.CTkFrame(self.int_pdf_frame, fg_color=("gray95", "#18181b"), corner_radius=8)
         pdf_plot_box.grid(row=2, column=0, sticky="ew", padx=6, pady=(2, 10))
@@ -747,15 +919,15 @@ class KalkulusUMKMApp(ctk.CTk):
         cols = ("q", "R", "C", "P", "AC", "MR", "MC", "P_prime", "status")
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended")
 
-        col_configs = [
+        col_configs: list[tuple[str, str, int, AnchorType]] = [
             ("q", "Porsi (x)", 75, "center"),
             ("R", "Pendapatan R(x)", 125, "e"),
             ("C", "Total Biaya C(x)", 125, "e"),
-            ("P", "Keuntungan P(x)", 125, "e"),
+            ("P", "Keuntungan f(x)", 125, "e"),
             ("AC", "Biaya Rata2 AC(x)", 120, "e"),
             ("MR", "Marginal Rev (MR)", 115, "e"),
             ("MC", "Marginal Cost (MC)", 115, "e"),
-            ("P_prime", "Laju Laba P'(x)", 115, "e"),
+            ("P_prime", "Laju Laba f'(x)", 115, "e"),
             ("status", "Status Finansial", 130, "center")
         ]
 
@@ -779,159 +951,182 @@ class KalkulusUMKMApp(ctk.CTk):
         self.tab_laporan.grid_rowconfigure(0, weight=1)
         self.tab_laporan.grid_columnconfigure(0, weight=1)
 
-        self.lap_scroll = ctk.CTkScrollableFrame(self.tab_laporan)
+        self.lap_scroll = ctk.CTkScrollableFrame(self.tab_laporan, fg_color=self._paper_desk_color())
         self.lap_scroll.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        self._paper_desks.append(self.lap_scroll)
+        paper = self._create_paper_sheet_frame(self.lap_scroll, row=0)
 
-        laporan_content = """
-======================================================================================================
-                LAPORAN ILMIAH PROYEK AKHIR MATA KULIAH KALKULUS DASAR
-======================================================================================================
+        cover = ctk.CTkFrame(paper, fg_color="transparent")
+        cover.pack(fill="x", pady=(4, 10))
+        ctk.CTkLabel(
+            cover,
+            text="LAPORAN AKHIR",
+            font=ctk.CTkFont(family="Times New Roman", size=16, weight="bold"),
+            text_color="#0f172a",
+            justify="center",
+        ).pack(anchor="center", pady=(0, 6))
+        ctk.CTkLabel(
+            cover,
+            text="ANALISIS MAKSIMISASI KEUNTUNGAN USAHA BERDASARKAN\nFUNGSI PENDAPATAN DAN FUNGSI BIAYA",
+            font=ctk.CTkFont(family="Times New Roman", size=14, weight="bold"),
+            text_color="#1e3a8a",
+            justify="center",
+            wraplength=610,
+        ).pack(anchor="center", pady=(0, 6))
+        ctk.CTkLabel(
+            cover,
+            text="Disusun untuk Memenuhi Salah Satu Tugas Mata Kuliah Kalkulus Dasar",
+            font=ctk.CTkFont(family="Times New Roman", size=11, slant="italic"),
+            text_color="#475569",
+            justify="center",
+            wraplength=610,
+        ).pack(anchor="center", pady=(0, 14))
 
-Judul Proyek:
-PENERAPAN KONSEP TURUNAN DALAM MENENTUKAN KEUNTUNGAN MAKSIMUM PADA UMKM KETOPRAK
+        ctk.CTkLabel(
+            cover,
+            text="Dosen Pengampu:",
+            font=ctk.CTkFont(family="Times New Roman", size=12),
+            text_color="#334155",
+            justify="center",
+        ).pack(anchor="center")
+        ctk.CTkLabel(
+            cover,
+            text="Neng Ika Kurniati, S.Si., M.Cs.",
+            font=ctk.CTkFont(family="Times New Roman", size=12, weight="bold"),
+            text_color="#0f172a",
+            justify="center",
+        ).pack(anchor="center", pady=(2, 14))
 
-Institusi:
-Program Studi Informatika, Fakultas Teknik, Universitas Siliwangi (2026)
+        ctk.CTkLabel(
+            cover,
+            text="Disusun Oleh:\nKelompok 3",
+            font=ctk.CTkFont(family="Times New Roman", size=12, weight="bold"),
+            text_color="#0f172a",
+            justify="center",
+        ).pack(anchor="center", pady=(0, 8))
 
-Format Proyek:
-Team Project-Based Learning (Ujian Akhir Semester Kalkulus Dasar)
-Topik Pilihan 1: Penerapan Turunan dalam Optimasi Keuntungan Usaha
-
-------------------------------------------------------------------------------------------------------
-1. ABSTRAK & LATAR BELAKANG
-------------------------------------------------------------------------------------------------------
-Usaha Mikro, Kecil, dan Menengah (UMKM) makanan menghadapi tantangan dalam menentukan jumlah porsi harian
-yang paling menguntungkan. Menambah produksi memang berpotensi menaikkan pendapatan, namun di saat yang sama
-akan memicu kenaikan biaya yang lebih cepat (disekonomi skala) akibat kelelahan kerja, lembur, dan pembelian
-bahan baku pelengkap secara mendadak dengan harga eceran.
-
-Studi ini memodelkan hubungan antara porsi produksi (x), fungsi pendapatan R(x), fungsi biaya C(x),
-dan fungsi keuntungan P(x), baik melalui turunan maupun penerapan integral (substitusi u, nilai mutlak,
-pecah polinom ln|x|, integral trigonometri, dan Teorema Dasar Kalkulus I).
-
-------------------------------------------------------------------------------------------------------
-2. PEMODELAN MATEMATIKA KALKULUS (CONTOH STUDI KASUS AWAL 15RB)
-------------------------------------------------------------------------------------------------------
-- Variabel Keputusan : x (jumlah porsi ketoprak diproduksi & terjual per hari, x >= 0)
-- Parameter Model     :
-    * Harga jual (p)            : Rp 15.000 / porsi
-    * Biaya tetap harian (c/FC) : Rp 60.000 (sewa tempat, gas, penyusutan alat gerobak)
-    * Biaya variabel dasar (b)  : Rp 8.000 (tahu, lontong, bihun, tauge, kerupuk, bumbu kacang dasar)
-    * Koefisien kuadrat (a)     : Rp 50/porsi^2 (faktor disekonomi skala / kenaikan biaya marjinal)
-
-Fungsi yang Terbentuk (via FTC I: C(x) = c + int_0^x MC(t) dt dan P(x) = -c + int_0^x P'(t) dt):
-1. Fungsi Pendapatan : R(x) = 15.000 x
-2. Fungsi Biaya      : C(x) = 50 x^2 + 8.000 x + 60.000
-3. Fungsi Keuntungan : P(x) = R(x) - C(x)
-                     : P(x) = -50 x^2 + 7.000 x - 60.000
-
-------------------------------------------------------------------------------------------------------
-3. PENERAPAN KONSEP TURUNAN & INTEGRAL PADA FUNGSI P(x)
-------------------------------------------------------------------------------------------------------
-A. Konsep Turunan Pertama P'(x):
-   Laju perubahan sesaat keuntungan terhadap jumlah porsi:
-   P'(x) = d/dx [-50 x^2 + 7.000 x - 60.000]
-   P'(x) = -100 x + 7.000
-   Geometris: P'(x) adalah gradien garis singgung kurva laba P(x).
-   Ekonomis : P'(x) adalah Laba Marjinal (Marginal Profit).
-
-B. Konsep Titik Kritis (Critical Point):
-   Titik kritis stasioner dicapai saat turunan pertama bernilai nol:
-   P'(x) = 0
-   -100 x + 7.000 = 0
-   100 x = 7.000
-   x* = 70 porsi / hari
-   Kesimpulan: x* = 70 adalah satu-satunya titik kritis di dalam domain produksi.
-
-C. Konsep Nilai Maksimum dan Nilai Minimum (Uji Turunan Pertama):
-   1. Uji Turunan Pertama P'(x) di sekitar titik kritis x* = 70:
-      - Untuk 0 <= x < 70 (titik uji x = 60): P'(60) = -100(60) + 7.000 = +1.000 > 0 (kurva NAIK).
-      - Pada titik kritis x* = 70           : P'(70) = 0 (kondisi stasioner).
-      - Untuk x > 70 (titik uji x = 80)     : P'(80) = -100(80) + 7.000 = -1.000 < 0 (kurva TURUN).
-      Karena tanda P'(x) berubah dari POSITIF (+) ke NEGATIF (-) saat melewati x* = 70,
-      berdasarkan Uji Turunan Pertama maka P(70) terbukti merupakan TITIK MAKSIMUM MUTLAK.
-   2. Teorema Nilai Ekstrem pada Interval Tertutup [0, 140]:
-      - Nilai Maksimum Mutlak : P(70) = Rp 185.000 / hari (pada omzet Rp 1.050.000 dan biaya Rp 865.000).
-      - Nilai Minimum Mutlak : P(0) = -Rp 60.000 / hari (beban biaya tetap saat tidak memproduksi)
-                               dan P(140) = -Rp 60.000 / hari (disekonomi biaya akibat beban kuadrat).
-
-D. Konsep Aplikasi Turunan & Integral dalam Optimasi Nyata UMKM:
-   1. Keseimbangan Ekonomi Marjinal (MR = MC):
-      P'(x) = 0  <=>  R'(x) - C'(x) = 0  <=>  MR = MC
-      MR(x) = Rp 15.000 / porsi
-      MC(x) = 100 x + 8.000
-      Pada x* = 70: MC(70) = 100(70) + 8.000 = Rp 15.000 (Keseimbangan tercapai).
-   2. Analisis Titik Impas (Break-Even Point / BEP) saat P(x) = 0:
-      -50 x^2 + 7.000 x - 60.000 = 0
-      Diskriminan D = 7000^2 - 4(50)(60000) = 37.000.000
-      x_BEP1 = 9,17 porsi (dibulatkan 10 porsi untuk mulai untung).
-      x_BEP2 = 130,83 porsi (dibulatkan 130 porsi batas aman kapasitas).
-      Rentang Usaha Menguntungkan: 10 <= x <= 130 porsi per hari.
-   3. Penerapan Integral Mengikuti Rumus PDF (A.1-A.5 & B.1-B.5):
-      - Integral nilai mutlak linier & kuadrat (int |P'(x)| dx dan int |P(x)| dx)
-      - Integral biaya rata-rata AC(x) = (ax^2 + bx + c)/x dengan ln|x|
-      - Substitusi u + ubah batas untuk menghitung VC(x*) = (p^2 - b^2)/(4a)
-      - Integral trigonometri untuk proyeksi akumulasi laba bulanan 30 hari
-
-------------------------------------------------------------------------------------------------------
-4. INTERPRETASI EKONOMI MARJINAL (MICROECONOMICS INSIGHT)
-------------------------------------------------------------------------------------------------------
-Dalam teori ekonomi manajerial, keuntungan maksimal tercapai ketika Pendapatan Marjinal sama dengan
-Biaya Marjinal:
-   MR(x) = R'(x) = Rp 15.000
-   MC(x) = C'(x) = 100 x + 8.000
-   Kondisi MR = MC:
-   15.000 = 100 x + 8.000  =>  100 x = 7.000  =>  x* = 70 porsi.
-
-Penjelasan:
-- Selama x < 70, MR > MC (tambahan pendapatan lebih besar daripada tambahan biaya). Memperbanyak porsi
-  akan MENAMBAH keuntungan total.
-- Saat x = 70, MR = MC (keuntungan berada di puncak optimal).
-- Saat x > 70, MR < MC (tambahan biaya melebihi pendapatan). Memaksakan menambah porsi justru akan
-  MENURUNKAN keuntungan total akibat biaya lembur/bahan mahal.
-
-------------------------------------------------------------------------------------------------------
-5. REKOMENDASI STRATEGIS UNTUK PELAKU UMKM
-------------------------------------------------------------------------------------------------------
-1. Target Produksi Harian Ideal:
-   Pelaku usaha ketoprak sebaiknya menargetkan produksi di sekitar 70 porsi per hari untuk mendapatkan
-   laba harian maksimal Rp 185.000 (sekitar Rp 5.550.000 / bulan).
-2. Hindari Over-Produksi:
-   Membuat lebih dari 100-130 porsi per hari dengan satu gerobak justru meningkatkan risiko kerugian karena
-   kelelahan operasional dan bahan yang tidak habis terjual.
-3. Catat Biaya Nyata (Full Costing):
-   Penting untuk mencatat biaya tetap (sewa, listrik, gas) dan biaya variabel secara berkala untuk
-   menyesuaikan harga jual apabila terjadi lonjakan inflasi bahan pangan.
-
-------------------------------------------------------------------------------------------------------
-6. KELOMPOK PROYEK & DAFTAR REFERENSI
-------------------------------------------------------------------------------------------------------
-Tim Penyusun (Informatika - Fakultas Teknik Universitas Siliwangi 2026):
-1. [Nama Anggota 1] - [NPM] (Koordinator & Metodologi)
-2. [Nama Anggota 2] - [NPM] (Landasan Teori Kalkulus & Ekonomi)
-3. [Nama Anggota 3] - [NPM] (Pemodelan Matematika & Fungsi Biaya)
-4. [Nama Anggota 4] - [NPM] (Perhitungan Turunan & Titik Kritis)
-5. [Nama Anggota 5] - [NPM] (Pemrograman GUI Python & Visualisasi)
-6. [Nama Anggota 6] - [NPM] (Analisis Hasil & Penyusunan Laporan)
-
-Referensi Ilmiah:
-1. Stewart, J. (2016). Calculus: Early Transcendentals (8th ed.). Cengage Learning.
-2. Nurwahidah, N., & Mariani, A. (2021). Turunan (Derivatif): Sebuah pendekatan matematis dalam analisis
-   keuntungan maksimum. Jurnal MSA, 9(1), 1-6.
-3. Riani, A. C., Rukmana, A., Safira, N., & Purnamasari, P. (2025). Respon UMKM ketoprak terhadap kenaikan
-   harga bahan baku: Implikasi terhadap minat beli konsumen. Jurnal Lentera Pengabdian, 3(3).
-4. Azizah, S. U., & Cahyani, N. P. D. (2024). Analisis harga pokok produksi dengan metode full costing.
-   Kompeten: Jurnal Ilmiah Ekonomi dan Bisnis, 2(5).
-======================================================================================================
-"""
-        lap_lbl = ctk.CTkLabel(
-            self.lap_scroll,
-            text=laporan_content,
-            font=ctk.CTkFont(family="Consolas", size=11),
-            justify="left",
-            anchor="w"
+        members_box = ctk.CTkFrame(
+            cover,
+            fg_color="#f8fafc",
+            corner_radius=6,
+            border_width=1,
+            border_color="#cbd5e1",
+            height=10,
         )
-        lap_lbl.pack(fill="both", expand=True, padx=15, pady=15)
+        members_box.pack(anchor="center", pady=(0, 16))
+        members = [
+            ("1.", "Muhammad Fikri Haikal", "267006111030"),
+            ("2.", "Muhammad Amin Al Faruq", "267006111104"),
+            ("3.", "Hirzan Khairurrizal Ahza", "267006111168"),
+            ("4.", "Fahri Fauzira", "267006111171"),
+            ("5.", "Mochammad Fauzan Rizaldy", "267006111173"),
+            ("6.", "Anindi Nurmaleka", "267006111176"),
+        ]
+        for r_idx, (no_s, nama_s, npm_s) in enumerate(members):
+            top_pad = 8 if r_idx == 0 else 2
+            bot_pad = 8 if r_idx == len(members) - 1 else 2
+            ctk.CTkLabel(
+                members_box,
+                text=no_s,
+                font=ctk.CTkFont(family="Times New Roman", size=12),
+                text_color="#0f172a",
+                width=24,
+                anchor="w",
+            ).grid(row=r_idx, column=0, padx=(16, 4), pady=(top_pad, bot_pad), sticky="w")
+            ctk.CTkLabel(
+                members_box,
+                text=nama_s,
+                font=ctk.CTkFont(family="Times New Roman", size=12),
+                text_color="#0f172a",
+                width=230,
+                anchor="w",
+            ).grid(row=r_idx, column=1, padx=(0, 18), pady=(top_pad, bot_pad), sticky="w")
+            ctk.CTkLabel(
+                members_box,
+                text=npm_s,
+                font=ctk.CTkFont(family="Times New Roman", size=12),
+                text_color="#1e3a8a",
+                width=115,
+                anchor="e",
+            ).grid(row=r_idx, column=2, padx=(0, 16), pady=(top_pad, bot_pad), sticky="e")
+
+        ctk.CTkLabel(
+            cover,
+            text="PROGRAM STUDI INFORMATIKA\nFAKULTAS TEKNIK\nUNIVERSITAS SILIWANGI\nTASIKMALAYA\n2026",
+            font=ctk.CTkFont(family="Times New Roman", size=12, weight="bold"),
+            text_color="#0f172a",
+            justify="center",
+        ).pack(anchor="center", pady=(0, 8))
+
+        ctk.CTkFrame(paper, width=10, height=2, fg_color="#1e3a8a").pack(fill="x", pady=(6, 14))
+
+        self._add_paper_section(
+            paper,
+            "1. Abstrak & Latar Belakang",
+            prose=(
+                "Usaha Mikro, Kecil, dan Menengah (UMKM) makanan menghadapi tantangan dalam menentukan jumlah porsi harian "
+                "yang paling menguntungkan. Menambah produksi berpotensi menaikkan pendapatan, namun sekaligus memicu kenaikan "
+                "biaya marjinal yang lebih cepat (disekonomi skala) akibat kelelahan kerja, lembur, serta pembelian bahan baku "
+                "tambahan secara mendadak dengan harga eceran.\n\n"
+                "Studi ini memodelkan hubungan antara porsi produksi (x), fungsi pendapatan R(x), fungsi biaya total C(x), "
+                "dan fungsi keuntungan f(x) menggunakan turunan pertama, titik kritis, uji turunan pertama, serta penerapan integral "
+                "(substitusi u, nilai mutlak, pecah polinom ln|x|, integral trigonometri, dan Teorema Dasar Kalkulus I)."
+            ),
+        )
+
+        self._add_paper_section(
+            paper,
+            "2. Pemodelan Matematika Kalkulus (Studi Kasus Awal)",
+            prose="Dengan variabel keputusan x >= 0 (jumlah porsi ketoprak/hari), harga jual p = Rp 15.000, biaya tetap c = Rp 60.000, biaya variabel b = Rp 8.000, dan disekonomi kuadrat a = 50:",
+            math_lines=[
+                r"$\mathrm{1.\ Pendapatan\ Total:}\quad R(x) = \int_0^x 15.000\,dt = 15.000x$",
+                r"$\mathrm{2.\ Biaya\ Total:}\quad C(x) = 60.000 + \int_0^x (100t + 8.000)\,dt = 50x^2 + 8.000x + 60.000$",
+                r"$\mathrm{3.\ Fungsi\ Keuntungan:}\quad f(x) = R(x) - C(x) = -50x^2 + 7.000x - 60.000$",
+            ],
+        )
+
+        self._add_paper_section(
+            paper,
+            "3. Turunan Pertama, Titik Kritis, & Uji Turunan Pertama",
+            prose="Turunan pertama f'(x) menyatakan Laba Marjinal (MR - MC). Titik kritis stasioner dicapai saat f'(x) = 0:",
+            math_lines=[
+                r"$f'(x) = \frac{d}{dx}\left(-50x^2 + 7.000x - 60.000\right) = -100x + 7.000$",
+                r"$f'(x) = 0 \ \Rightarrow\ -100x + 7.000 = 0 \ \Rightarrow\ x^* = 70\ \mathrm{porsi/hari}$",
+            ],
+            bullets=[
+                "Uji interval kiri (0 <= x < 70, uji x = 60): f'(60) = +1.000 > 0 (kurva naik).",
+                "Titik kritis x* = 70: f'(70) = 0 (stasioner, MR = MC = Rp 15.000).",
+                "Uji interval kanan (x > 70, uji x = 80): f'(80) = -1.000 < 0 (kurva turun).",
+                "BEP (f(x) = 0): x_BEP1 = 9,17 porsi dan x_BEP2 = 130,83 porsi (rentang untung 10 s.d. 130 porsi/hari).",
+            ],
+            callout={
+                "title": "Kesimpulan Teorema Nilai Ekstrem pada [0, 140]",
+                "text": "Nilai Maksimum Mutlak: f(70) = Rp 185.000/hari (Omzet Rp 1.050.000, Biaya Rp 865.000)  |  Nilai Minimum Mutlak: f(0) = f(140) = -Rp 60.000/hari.",
+                "tone": "emerald",
+            },
+        )
+
+        self._add_paper_section(
+            paper,
+            "4. Integrasi Rumus PDF (A.1-A.5 & B.1-B.5) & Interpretasi Manajerial",
+            bullets=[
+                "Pola B.3 & B.4: Integral nilai mutlak linier int |f'(x)| dx dan kuadrat int |f(x)| dx untuk total pergerakan laba serta rasio surplus vs defisit.",
+                "Pola A.3: Integral biaya rata-rata AC(x) = (ax^2 + bx + c)/x menggunakan pemecahan pecahan polinom & ln|x|.",
+                "Pola B.1 & A.1: Integral substitusi u + ubah batas untuk menghitung VC(x*) = (p^2 - b^2)/(4a).",
+                "Pola A.4 & B.2: Integral trigonometri proyeksi akumulasi laba bulanan 30 hari dengan gelombang penjualan.",
+                "Selama x < x* (MR > MC), menambah porsi meningkatkan total laba; saat x > x* (MR < MC), over-produksi justru memangkas laba.",
+            ],
+        )
+
+        self._add_paper_section(
+            paper,
+            "5. Rekomendasi Strategis & Daftar Referensi",
+            bullets=[
+                "Targetkan produksi di sekitar titik optimum x* agar margin bersih harian maksimal tanpa kelelahan/over-produksi.",
+                "Catat biaya tetap per hari secara terpisah dari modal bahan baku per porsi (pendekatan full costing).",
+                "Referensi: Stewart (2016) Calculus 8th ed.; Nurwahidah & Mariani (2021) Jurnal MSA 9(1); Riani dkk. (2025) Jurnal Lentera Pengabdian 3(3); Azizah & Cahyani (2024) Kompeten 2(5).",
+            ],
+        )
 
     def _setup_tab_tasik(self):
         self.tab_tasik.grid_rowconfigure(0, weight=1)
@@ -990,13 +1185,14 @@ Referensi Ilmiah:
             show="headings",
             height=8
         )
-        for cid, cname, w, anc in [
+        var_cols: list[tuple[str, str, int, AnchorType]] = [
             ("komponen", "Komponen Bahan / Kemasan", 205, "w"),
             ("takaran", "Takaran / Porsi", 185, "w"),
             ("subtotal", "Modal / Porsi", 105, "e"),
             ("rentang", "Naik-Turun (/Porsi)", 150, "center"),
             ("harian", "Belanja Harian (q*)", 165, "e"),
-        ]:
+        ]
+        for cid, cname, w, anc in var_cols:
             self.var_tree.heading(cid, text=cname)
             self.var_tree.column(cid, width=w, anchor=anc)
         var_xscroll = ttk.Scrollbar(var_frame, orient="horizontal", command=self.var_tree.xview)
@@ -1023,13 +1219,14 @@ Referensi Ilmiah:
             show="headings",
             height=7
         )
-        for cid, cname, w, anc in [
+        fixed_cols: list[tuple[str, str, int, AnchorType]] = [
             ("komponen", "Komponen Operasional Tetap", 200, "w"),
             ("basis", "Pemakaian Riil / Hari", 190, "w"),
             ("subtotal", "Biaya / Hari", 105, "e"),
             ("rentang", "Naik-Turun (/Hari)", 145, "center"),
             ("sumber", "Referensi Tarif Lokal", 185, "w"),
-        ]:
+        ]
+        for cid, cname, w, anc in fixed_cols:
             self.fixed_tree.heading(cid, text=cname)
             self.fixed_tree.column(cid, width=w, anchor=anc)
         fix_xscroll = ttk.Scrollbar(fix_frame, orient="horizontal", command=self.fixed_tree.xview)
@@ -1056,14 +1253,15 @@ Referensi Ilmiah:
             show="headings",
             height=4
         )
-        for cid, cname, w, anc in [
+        fluk_cols: list[tuple[str, str, int, AnchorType]] = [
             ("kondisi", "Kondisi Harga Pasar", 215, "w"),
             ("b_val", "Modal / Porsi (b)", 115, "e"),
             ("c_val", "Tetap / Hari (c)", 115, "e"),
             ("q_opt", "Target (q*)", 95, "center"),
             ("modal_harian", "Total Modal Harian", 140, "e"),
             ("laba_max", "Laba Bersih Maks/Hr", 145, "e"),
-        ]:
+        ]
+        for cid, cname, w, anc in fluk_cols:
             self.fluktuasi_tree.heading(cid, text=cname)
             self.fluktuasi_tree.column(cid, width=w, anchor=anc)
         fluk_xscroll = ttk.Scrollbar(fluk_frame, orient="horizontal", command=self.fluktuasi_tree.xview)
@@ -1090,13 +1288,14 @@ Referensi Ilmiah:
             show="headings",
             height=13
         )
-        for cid, cname, w, anc in [
+        cat_cols: list[tuple[str, str, int, AnchorType]] = [
             ("kategori", "Kategori", 130, "w"),
             ("komoditas", "Komoditas / Item", 205, "w"),
             ("harga", "Acuan Utama", 130, "e"),
             ("kisaran", "Kisaran Pasar Lapangan", 215, "w"),
             ("sumber", "Sumber Pemantauan", 200, "w"),
-        ]:
+        ]
+        for cid, cname, w, anc in cat_cols:
             self.catalog_tree.heading(cid, text=cname)
             self.catalog_tree.column(cid, width=w, anchor=anc)
 
@@ -1205,6 +1404,31 @@ Referensi Ilmiah:
         ac_opt = (c_opt / q_opt) if q_opt > 0 else 0
         margin_pct = (p_opt / r_opt * 100.0) if r_opt > 0 else 0
 
+        f_zero = -c
+        f_end = -a * (float(self.q_max) ** 2) + alpha * float(self.q_max) - c
+        if a > 0 and 0.0 < q_opt < float(self.q_max) and is_max:
+            x_max_dom = q_opt
+            f_max_dom = p_opt
+        elif f_end > f_zero:
+            x_max_dom = float(self.q_max)
+            f_max_dom = f_end
+        else:
+            x_max_dom = 0.0
+            f_max_dom = f_zero
+
+        if abs(f_zero - f_end) < 1e-6:
+            x_min = 0.0
+            f_min = f_zero
+            min_both_ends = True
+        elif f_end < f_zero:
+            x_min = float(self.q_max)
+            f_min = f_end
+            min_both_ends = False
+        else:
+            x_min = 0.0
+            f_min = f_zero
+            min_both_ends = False
+
         D = (alpha ** 2) - (4.0 * a * c)
         if D >= 0 and a > 0:
             sqrt_D = np.sqrt(D)
@@ -1220,9 +1444,28 @@ Referensi Ilmiah:
             "x_kiri": x_kiri, "x_kanan": x_kanan,
             "p_prime_kiri": p_prime_kiri, "p_prime_kanan": p_prime_kanan,
             "r_opt": r_opt, "c_opt": c_opt, "p_opt": p_opt,
+            "f_zero": f_zero, "f_end": f_end,
+            "x_max_dom": x_max_dom, "f_max_dom": f_max_dom,
+            "x_min": x_min, "f_min": f_min, "min_both_ends": min_both_ends,
             "ac_opt": ac_opt, "margin_pct": margin_pct,
             "D": D, "q_bep1": q_bep1, "q_bep2": q_bep2
         }
+
+    @staticmethod
+    def _fmt_rp(val: float) -> str:
+        if val < 0:
+            return f"-Rp {abs(val):,.0f}".replace(",", ".")
+        return f"Rp {val:,.0f}".replace(",", ".")
+
+    @staticmethod
+    def _fmt_num(val: float, decimals: int = 0) -> str:
+        if decimals == 0:
+            return f"{val:,.0f}".replace(",", ".")
+        return f"{val:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    @staticmethod
+    def _rp_axis_formatter() -> FuncFormatter:
+        return FuncFormatter(lambda v, _pos: f"{v:,.0f}".replace(",", "."))
 
     @staticmethod
     def _parse_number_input(raw_text: str):
@@ -1290,9 +1533,13 @@ Referensi Ilmiah:
         if self.auto_tasik_var.get():
             self._on_price_change(immediate=True, force=True)
         else:
-            self.tasik_breakdown = hitung_estimasi_umkm(
-                self.p, self.preset_menu.get(), self.wilayah, self.kondisi_pasar
-            )
+            try:
+                self.tasik_breakdown = hitung_estimasi_umkm(
+                    self.p, self.preset_menu.get(), self.wilayah, self.kondisi_pasar
+                )
+            except Exception as err:
+                messagebox.showerror("Gagal Hitung Pasar", f"Tidak dapat menghitung estimasi pasar: {err}")
+                return
             self._update_tasik_tab()
 
     def _on_toggle_auto_tasik(self):
@@ -1319,10 +1566,10 @@ Referensi Ilmiah:
         self.preset_menu.set("UMKM Ketoprak (Harian Tasikmalaya)")
         self._apply_preset("UMKM Ketoprak (Harian Tasikmalaya)")
 
-    def _on_price_change(self, event=None, immediate=False, force=False):
+    def _on_price_change(self, event=None, immediate=False, force=False) -> bool:
         """Mengisi otomatis c, b, a, q_max harian (non-borongan) dari harga pasar Tasikmalaya saat p berubah."""
         if self._syncing_from_p:
-            return
+            return False
 
         if immediate and self._price_debounce_id is not None:
             try:
@@ -1333,43 +1580,62 @@ Referensi Ilmiah:
 
         raw = self.entries["p"].get().strip()
         if not force and raw == self._last_p_text:
-            return
+            return False
 
         p_baru = self._parse_number_input(raw)
-        if p_baru is None or p_baru <= 0:
-            return
+        if p_baru is None or p_baru <= 0 or p_baru > 1e9:
+            return False
 
         # Tahan eksekusi saat pengguna baru mengetik digit awal (mis. '2' atau '20' menuju '20000')
         if not immediate and not force and p_baru < 1000:
-            return
-
-        self._last_p_text = raw
-        self._pending_price_autofill = False
+            return False
 
         if not self.auto_tasik_var.get():
             c_val = self._parse_number_input(self.entries["c"].get())
             b_val = self._parse_number_input(self.entries["b"].get())
             a_val = self._parse_number_input(self.entries["a"].get())
             q_val = self._parse_number_input(self.entries["q_max"].get())
-            if None not in (c_val, b_val, a_val, q_val) and a_val > 0 and b_val >= 0 and c_val >= 0:
+            if (
+                c_val is not None
+                and b_val is not None
+                and a_val is not None
+                and q_val is not None
+                and 0 < a_val <= 1e7
+                and 0 <= b_val <= 1e9
+                and 0 <= c_val <= 1e10
+            ):
                 self.c = c_val
                 self.b = b_val
                 self.a = a_val
-                self.q_max = max(20, int(q_val))
+                self.q_max = min(10000, max(20, int(round(q_val))))
             self.p = p_baru
-            self.tasik_breakdown = hitung_estimasi_umkm(
-                self.p, self.preset_menu.get(), self.wilayah, self.kondisi_pasar
-            )
+            try:
+                self.tasik_breakdown = hitung_estimasi_umkm(
+                    self.p, self.preset_menu.get(), self.wilayah, self.kondisi_pasar
+                )
+            except Exception as err:
+                messagebox.showerror("Gagal Hitung Estimasi", f"Gagal menghitung estimasi pasar: {err}")
+                return False
+            self._last_p_text = raw
+            self._pending_price_autofill = False
             self._sync_slider_and_views()
-            return
+            return True
 
-        estimasi = hitung_estimasi_umkm(
-            p_baru, self.preset_menu.get(), self.wilayah, self.kondisi_pasar
-        )
+        try:
+            estimasi = hitung_estimasi_umkm(
+                p_baru, self.preset_menu.get(), self.wilayah, self.kondisi_pasar
+            )
+        except Exception as err:
+            messagebox.showerror("Gagal Hitung Estimasi", f"Gagal menghitung estimasi pasar: {err}")
+            return False
+
+        self._last_p_text = raw
+        self._pending_price_autofill = False
+
         c_baru = estimasi["c"]
         b_baru = estimasi["b"]
         a_baru = estimasi["a"]
-        q_max_baru = estimasi["q_max"]
+        q_max_baru = min(10000, max(20, int(estimasi["q_max"])))
 
         c_text = self._format_synced_number(c_baru, max_decimals=0)
         b_text = self._format_synced_number(b_baru, max_decimals=0)
@@ -1399,6 +1665,7 @@ Referensi Ilmiah:
         self._manual_override = False
         self.tasik_breakdown = estimasi
         self._sync_slider_and_views()
+        return True
 
     def _apply_preset(self, preset_name):
         if preset_name in self.presets:
@@ -1426,6 +1693,7 @@ Referensi Ilmiah:
 
             if data.get("static_report"):
                 self._manual_override = False
+                self._pending_price_autofill = False
                 self._on_click_calculate()
             elif self.auto_tasik_var.get():
                 self._on_price_change(immediate=True, force=True)
@@ -1435,8 +1703,8 @@ Referensi Ilmiah:
 
     def _on_click_calculate(self):
         if self._pending_price_autofill and self.auto_tasik_var.get():
-            self._on_price_change(immediate=True, force=True)
-            return
+            if self._on_price_change(immediate=True, force=True):
+                return
 
         try:
             p_val = self._parse_number_input(self.entries["p"].get())
@@ -1445,18 +1713,26 @@ Referensi Ilmiah:
             a_val = self._parse_number_input(self.entries["a"].get())
             q_val = self._parse_number_input(self.entries["q_max"].get())
 
-            if None in (p_val, c_val, b_val, a_val, q_val):
+            if p_val is None or c_val is None or b_val is None or a_val is None or q_val is None:
                 raise ValueError("Invalid numeric format")
+
+            if p_val <= 0 or a_val <= 0 or b_val < 0 or c_val < 0:
+                messagebox.showerror("Kesalahan Input", "Parameter p dan a harus bernilai lebih besar dari 0, serta biaya tidak boleh negatif.")
+                return
+
+            if p_val > 1e9 or c_val > 1e10 or b_val > 1e9 or a_val > 1e7:
+                messagebox.showerror("Nilai Terlalu Besar", "Nilai parameter melebihi batas wajar kalkulasi. Mohon masukkan angka yang lebih realistis.")
+                return
+
+            if q_val < 20 or q_val > 10000:
+                messagebox.showerror("Batas Rentang Porsi", "Batas rentang porsi harus berada antara 20 sampai 10.000 porsi.")
+                return
 
             self.p = p_val
             self.c = c_val
             self.b = b_val
             self.a = a_val
-            self.q_max = max(20, int(q_val))
-
-            if self.p <= 0 or self.a <= 0 or self.b < 0 or self.c < 0:
-                messagebox.showerror("Kesalahan Input", "Parameter p dan a harus bernilai lebih besar dari 0, serta biaya tidak boleh negatif.")
-                return
+            self.q_max = int(round(q_val))
 
             est = hitung_estimasi_umkm(
                 self.p, self.preset_menu.get(), self.wilayah, self.kondisi_pasar
@@ -1468,10 +1744,13 @@ Referensi Ilmiah:
                 or abs(self.a - est["a"]) > 0.15
             )
             self._last_p_text = self.entries["p"].get().strip()
+            self._pending_price_autofill = False
 
             self._sync_slider_and_views()
         except ValueError:
             messagebox.showerror("Format Salah", "Mohon masukkan angka numerik yang valid pada seluruh kolom parameter.")
+        except Exception as err:
+            messagebox.showerror("Kesalahan Perhitungan", f"Gagal menghitung model kalkulus:\n{err}")
 
     def _on_slider_change(self, val):
         self.slider_q = float(val)
@@ -1499,11 +1778,41 @@ Referensi Ilmiah:
         self._populate_table()
         self._redraw_graph()
 
+    def _fmt_rp_math(self, val: float) -> str:
+        s = self._fmt_num(abs(val))
+        return rf"-\mathrm{{Rp}}\,{s}" if val < 0 else rf"\mathrm{{Rp}}\,{s}"
+
+    @staticmethod
+    def _signed_poly_terms(quad_c: float, lin_c: float, const_c: float, var: str = "x") -> str:
+        parts = []
+        if quad_c != 0:
+            q_s = f"{abs(quad_c):g}"
+            parts.append((f"-{q_s}{var}^2" if quad_c < 0 else f"{q_s}{var}^2"))
+        if lin_c != 0:
+            l_s = f"{abs(lin_c):,.0f}".replace(",", ".")
+            sign = " - " if lin_c < 0 else (" + " if parts else "")
+            parts.append(f"{sign}{l_s}{var}")
+        if const_c != 0:
+            c_s = f"{abs(const_c):,.0f}".replace(",", ".")
+            sign = " - " if const_c < 0 else (" + " if parts else "")
+            parts.append(f"{sign}{c_s}")
+        return "".join(parts) or "0"
+
     def _update_integral_tab(self):
-        if not hasattr(self, "int_umkm_text_lbl"):
+        if not hasattr(self, "int_umkm_paper_body"):
             return
 
-        ig = hitung_integral_umkm(self.p, self.c, self.b, self.a, self.q_max)
+        try:
+            ig = hitung_integral_umkm(self.p, self.c, self.b, self.a, self.q_max)
+        except Exception as err:
+            self._clear_paper_body(self.int_umkm_paper_body)
+            self._add_callout_box(
+                self.int_umkm_paper_body,
+                "Gagal Menghitung Integral UMKM",
+                f"Terjadi kesalahan perhitungan integral: {err}",
+                tone="amber",
+            )
+            return
         b3 = ig["b3"]
         b4 = ig["b4"]
         a3 = ig["a3"]
@@ -1511,56 +1820,149 @@ Referensi Ilmiah:
         a4 = ig["a4_b2"]
         b5 = ig["b5"]
 
-        sub_lines = []
-        for idx, sub in enumerate(b4["sub_intervals"], 1):
-            tanda_formula = "P(x)" if "Positif" in sub["tanda"] else "-(P(x))"
-            sub_lines.append(
-                f"   * Sub-interval {idx} [{sub['lo']:.2f} .. {sub['hi']:.2f}] ({sub['tanda']} -> {tanda_formula}): "
-                f"Luas = Rp {sub['nilai_abs']:,.0f}"
-            )
-        sub_txt = "\n".join(sub_lines)
-
+        p_s = self._fmt_num(ig["p"])
+        c_s = self._fmt_num(ig["c"])
+        b_s = self._fmt_num(ig["b"])
+        a_s = f"{ig['a']:g}"
+        half_a_s = f"{ig['a'] / 2.0:g}"
+        two_a_s = f"{2.0 * ig['a']:g}"
+        four_a_s = f"{4.0 * ig['a']:g}"
+        q_max_s = f"{ig['q_max']:.0f}"
         bep1_s = f"{ig['q_bep1']:.2f}" if ig["q_bep1"] is not None else "-"
         bep2_s = f"{ig['q_bep2']:.2f}" if ig["q_bep2"] is not None else "-"
-        samples_txt = " | ".join(f"x={qv:g} -> Rp {av:,.2f}" for qv, av in b5["samples"])
+        fx_tex = self._signed_poly_terms(-ig["a"], ig["alpha"], -ig["c"], "x")
+        fp_tex = self._signed_poly_terms(0, -2.0 * ig["a"], ig["alpha"], "x")
 
-        txt = (
-            f"==============================================================================================\n"
-            f"     PENERAPAN RUMUS INTEGRAL (MENGIKUTI KODE RUMUS PDF A.1-A.5 & B.1-B.5) PADA MODEL UMKM\n"
-            f"==============================================================================================\n"
-            f"Parameter Aktif: p = Rp {ig['p']:,.0f} | c = Rp {ig['c']:,.0f} | b = Rp {ig['b']:,.0f} | a = {ig['a']} | Domain x ∈ [0, {ig['q_max']:.0f}]\n"
-            f"Fungsi Laba: P(x) = -{ig['a']}x² + {ig['alpha']:,.0f}x - {ig['c']:,.0f}   |   Laba Marjinal: P'(x) = -{2*ig['a']:.0f}x + {ig['alpha']:,.0f}\n\n"
-            f"1. INTEGRAL NILAI MUTLAK LINIER (MENGIKUTI RUMUS PDF B.3: ∫ |x - 4| dx)\n"
-            f"   Rumus: ∫[0..{ig['q_max']:.0f}] |P'(x)| dx = ∫[0..{ig['q_max']:.0f}] |MR - MC| dx\n"
-            f"   * Pembuat nol P'(x) = 0  ==>  x* = {ig['q_opt']:.2f} (split interval pada x = {b3['q_split']:.2f})\n"
-            f"   * [0 <= x <= {b3['q_split']:.2f}]  : P'(x) >= 0  -> ∫ P'(x) dx  = Rp {b3['kenaikan_laba']:,.0f}  (Total Kenaikan Laba Menuju Puncak)\n"
-            f"   * [{b3['q_split']:.2f} <= x <= {ig['q_max']:.0f}]: P'(x) < 0   -> ∫ -P'(x) dx = Rp {b3['pengikisan_laba']:,.0f}  (Pemborosan Over-Produksi)\n"
-            f"   * Total Integral Mutlak |P'(x)| (Analitis) = Rp {b3['total_eksak']:,.0f}  (Cek Numerik: Rp {b3['total_numerik']:,.0f})\n\n"
-            f"2. INTEGRAL NILAI MUTLAK KUADRAT (MENGIKUTI RUMUS PDF B.4: ∫ |x² - 3x - 4| dx)\n"
-            f"   Rumus: ∫[0..{ig['q_max']:.0f}] |P(x)| dx   (Akar P(x) = 0 di BEP1 = {bep1_s}, BEP2 = {bep2_s})\n"
-            f"{sub_txt}\n"
-            f"   * Total Area Surplus Laba (+) = Rp {b4['area_laba']:,.0f}  |  Total Area Defisit (-) = Rp {b4['area_rugi']:,.0f}\n"
-            f"   * Total Integral Mutlak ∫|P(x)| dx = Rp {b4['total_mutlak_eksak']:,.0f}  (Cek Numerik: Rp {b4['total_mutlak_numerik']:,.0f})\n"
-            f"   * Integral Netto ∫ P(x) dx = Rp {b4['integral_netto']:,.0f}  |  Rata-Rata Laba di [0,{ig['q_max']:.0f}] = Rp {b4['rata_laba_domain']:,.0f}/hari\n\n"
-            f"3. INTEGRAL PECAHAN POLINOM & ln|x| (MENGIKUTI RUMUS PDF A.3: ∫ (2x² - 5x + 6)/x dx)\n"
-            f"   Biaya Rata-Rata AC(x) = C(x)/x = ({ig['a']}x² + {ig['b']:,.0f}x + {ig['c']:,.0f})/x = {ig['a']}x + {ig['b']:,.0f} + {ig['c']:,.0f}/x\n"
-            f"   * ∫[{a3['q1']:.0f}..{a3['q2']:.0f}] AC(x) dx = [ ({ig['a']}/2)x² + {ig['b']:,.0f}x + {ig['c']:,.0f} ln|x| ]_{a3['q1']:.0f}^{a3['q2']:.0f} = Rp {a3['integral_ac']:,.0f}\n"
-            f"   * Rata-Rata Biaya Per Porsi pada [{a3['q1']:.0f}, {a3['q2']:.0f}] = Rp {a3['rata_rata_ac']:,.0f}/porsi\n\n"
-            f"4. INTEGRAL SUBSTITUSI u + UBAH BATAS (MENGIKUTI RUMUS PDF B.1 / A.1)\n"
-            f"   Menghitung Total Biaya Variabel Optimal VC(x*) = ∫[0..{b1['q_hi']:.2f}] ({2*ig['a']:.0f}x + {ig['b']:,.0f}) dx\n"
-            f"   * misal: u = {2*ig['a']:.0f}x + {ig['b']:,.0f}  ==>  du = {2*ig['a']:.0f} dx  ==>  dx = 1/{2*ig['a']:.0f} du\n"
-            f"   * Ubah batas: x = 0 -> u = {b1['u_lo']:,.0f}  |  x = {b1['q_hi']:.2f} -> u = {b1['u_hi']:,.0f}\n"
-            f"   * subs = (1/{2*ig['a']:.0f}) ∫[{b1['u_lo']:,.0f}..{b1['u_hi']:,.0f}] u du = [u² / {4*ig['a']:.0f}]_{b1['u_lo']:,.0f}^{b1['u_hi']:,.0f} = Rp {b1['vc_substitusi']:,.0f}\n"
-            f"   * Verifikasi rumus langsung a(x*)² + b(x*) = Rp {b1['vc_langsung']:,.0f} (Identik 100%)\n\n"
-            f"5. INTEGRAL TRIGONOMETRI SUBSTITUSI u = ωt (MENGIKUTI RUMUS PDF A.4 & B.2: Proyeksi Laba {a4['hari']} Hari)\n"
-            f"   L(t) = P* + ΔP·(½ sin(ωt) + sin(2ωt)), dengan ω = 2π/7 (siklus mingguan), P* = Rp {ig['p_opt']:,.0f}, ΔP = Rp {a4['delta_p']:,.0f}\n"
-            f"   * ∫[0..{a4['hari']}] L(t) dt = [ P*·t - (ΔP/(2ω))cos(ωt) - (ΔP/(2ω))cos(2ωt) ]_0^{a4['hari']}\n"
-            f"   * Akumulasi Laba {a4['hari']} Hari (Gelombang Penjualan) = Rp {a4['laba_bulanan_musiman']:,.0f}  (vs Datar 30×P*: Rp {a4['laba_bulanan_datar']:,.0f})\n\n"
-            f"6. TEOREMA DASAR KALKULUS I & L'HÔPITAL (MENGIKUTI RUMUS PDF B.5)\n"
-            f"   lim[x->0] (1/x) ∫[0..x] MC(t) dt  =  lim[x->0] (d/dx ∫[0..x] (2at + b) dt) / (d/dx [x])  =  lim[x->0] (2ax + b)/1  =  Rp {b5['limit_eksak']:,.0f}\n"
-            f"   * Konvergensi AVC(x) saat x -> 0+: {samples_txt}"
-        ).replace(",", ".")
-        self.int_umkm_text_lbl.configure(text=txt)
+        body = self.int_umkm_paper_body
+        self._clear_paper_body(body)
+        self._add_paper_header(
+            body,
+            title="Penerapan Rumus Integral pada Model UMKM (PDF A.1–A.5 & B.1–B.5)",
+            subtitle="Evaluasi analitis & numerik integral nilai mutlak, pecahan polinom, substitusi u, trigonometri musiman, dan Teorema Dasar Kalkulus I.",
+            chips=[
+                f"Harga p = {self._fmt_rp(ig['p'])}",
+                f"Tetap c = {self._fmt_rp(ig['c'])}",
+                f"Modal b = {self._fmt_rp(ig['b'])}",
+                f"Koef. a = {a_s}",
+                f"Domain 0 ≤ x ≤ {q_max_s}",
+            ],
+        )
+        self._add_math_box(
+            body,
+            [
+                rf"$f(x) = {fx_tex},\qquad f'(x) = \mathrm{{MR}}(x) - \mathrm{{MC}}(x) = {fp_tex}$",
+            ],
+            accent="#0f172a",
+            fontsize=11.5,
+        )
+
+        # 1. B.3
+        self._add_paper_section(
+            body,
+            heading="1. Integral Nilai Mutlak Linier |f'(x)| — Pola PDF B.3",
+            prose=f"Memecah integral pada titik stasioner x* = {b3['q_split']:.2f} di mana laju marjinal f'(x) = 0:",
+            math_lines=[
+                rf"$\int_{{0}}^{{{q_max_s}}} |f'(x)|\,dx = \int_{{0}}^{{{q_max_s}}} |{fp_tex}|\,dx$",
+                rf"$\int_{{0}}^{{{b3['q_split']:.2f}}} f'(x)\,dx = {self._fmt_rp_math(b3['kenaikan_laba'])}\quad (\mathrm{{Kenaikan\ laba\ menuju\ puncak}})$",
+                rf"$\int_{{{b3['q_split']:.2f}}}^{{{q_max_s}}} \left(-f'(x)\right)\,dx = {self._fmt_rp_math(b3['pengikisan_laba'])}\quad (\mathrm{{Pemborosan\ over-produksi}})$",
+            ],
+            callout={
+                "title": "Total Variasi Laba (Analitis vs Numerik)",
+                "text": (
+                    f"Total Integral Mutlak ∫|f'(x)| dx (Analitis) = {self._fmt_rp(b3['total_eksak'])}  |  "
+                    f"Verifikasi Numerik = {self._fmt_rp(b3['total_numerik'])}"
+                ),
+                "tone": "blue",
+            },
+            accent="#1e3a8a",
+        )
+
+        # 2. B.4
+        b4_bullets = [
+            f"Sub-interval {idx} [{sub['lo']:.2f} .. {sub['hi']:.2f}] ({sub['tanda']} → {'f(x)' if 'Positif' in sub['tanda'] else '-f(x)'}): Luas = {self._fmt_rp(sub['nilai_abs'])}"
+            for idx, sub in enumerate(b4["sub_intervals"], 1)
+        ]
+        b4_bullets.extend([
+            f"Area Surplus Laba (+) = {self._fmt_rp(b4['area_laba'])}  |  Area Defisit Rugi (-) = {self._fmt_rp(b4['area_rugi'])}",
+            f"Verifikasi Numerik ∫|f(x)| dx = {self._fmt_rp(b4['total_mutlak_numerik'])}",
+        ])
+        self._add_paper_section(
+            body,
+            heading="2. Integral Nilai Mutlak Kuadrat |f(x)| — Pola PDF B.4",
+            prose=f"Pembuat nol f(x) = 0 berada pada titik impas BEP₁ = {bep1_s} dan BEP₂ = {bep2_s}:",
+            math_lines=[
+                rf"$\int_{{0}}^{{{q_max_s}}} |f(x)|\,dx = \int_{{0}}^{{{q_max_s}}} |{fx_tex}|\,dx = {self._fmt_rp_math(b4['total_mutlak_eksak'])}$",
+                rf"$\int_{{0}}^{{{q_max_s}}} f(x)\,dx\ (\mathrm{{Netto}}) = {self._fmt_rp_math(b4['integral_netto'])},\qquad \overline{{f}} = {self._fmt_rp_math(b4['rata_laba_domain'])}/\mathrm{{hari}}$",
+            ],
+            bullets=b4_bullets,
+            accent="#0f766e",
+        )
+
+        # 3. A.3
+        self._add_paper_section(
+            body,
+            heading="3. Integral Pecahan Polinom & ln|x| Biaya Rata-Rata AC(x) — Pola PDF A.3",
+            math_lines=[
+                rf"$\mathrm{{AC}}(x) = \frac{{C(x)}}{{x}} = \frac{{{a_s}x^2 + {b_s}x + {c_s}}}{{x}} = {a_s}x + {b_s} + \frac{{{c_s}}}{{x}}$",
+                rf"$\int_{{{a3['q1']:.0f}}}^{{{a3['q2']:.0f}}} \mathrm{{AC}}(x)\,dx = \left[ {half_a_s}x^2 + {b_s}x + {c_s}\ln|x| \right]_{{{a3['q1']:.0f}}}^{{{a3['q2']:.0f}}} = {self._fmt_rp_math(a3['integral_ac'])}$",
+            ],
+            callout={
+                "title": f"Rata-Rata Biaya Per Porsi pada [{a3['q1']:.0f}, {a3['q2']:.0f}]",
+                "text": f"Nilai rata-rata AC(x) = {self._fmt_rp(a3['rata_rata_ac'])}/porsi",
+                "tone": "slate",
+            },
+            accent="#7c3aed",
+        )
+
+        # 4. B.1 / A.1
+        u_lo_s = self._fmt_num(b1["u_lo"])
+        u_hi_s = self._fmt_num(b1["u_hi"])
+        self._add_paper_section(
+            body,
+            heading="4. Integral Substitusi u + Ubah Batas VC(x*) — Pola PDF B.1 / A.1",
+            math_lines=[
+                rf"$\mathrm{{VC}}(x^*) = \int_{{0}}^{{{b1['q_hi']:.2f}}} ({two_a_s}x + {b_s})\,dx,\qquad u = {two_a_s}x + {b_s} \;\Rightarrow\; dx = \frac{{1}}{{{two_a_s}}}\,du$",
+                rf"$\mathrm{{Batas:}}\ x = 0 \to u = {u_lo_s},\qquad x = {b1['q_hi']:.2f} \to u = {u_hi_s}$",
+                rf"$\mathrm{{VC}}(x^*) = \frac{{1}}{{{two_a_s}}}\int_{{{u_lo_s}}}^{{{u_hi_s}}} u\,du = \left[ \frac{{u^2}}{{{four_a_s}}} \right]_{{{u_lo_s}}}^{{{u_hi_s}}} = {self._fmt_rp_math(b1['vc_substitusi'])}$",
+            ],
+            callout={
+                "title": "Verifikasi Rumus Langsung",
+                "text": f"VC langsung = a(x*)² + b(x*) = {self._fmt_rp(b1['vc_langsung'])} (Identik 100%)",
+                "tone": "emerald",
+            },
+            accent="#b45309",
+        )
+
+        # 5. A.4 & B.2
+        self._add_paper_section(
+            body,
+            heading=f"5. Integral Trigonometri Substitusi u = ωt — Proyeksi {a4['hari']} Hari (PDF A.4 & B.2)",
+            math_lines=[
+                rf"$L(t) = f^* + \Delta f\left(\frac{{1}}{{2}}\sin(\omega t) + \sin(2\omega t)\right),\quad \omega = \frac{{2\pi}}{{7}},\ f^* = {self._fmt_rp_math(ig['p_opt'])},\ \Delta f = {self._fmt_rp_math(a4['delta_p'])}$",
+                rf"$\int_{{0}}^{{{a4['hari']}}} L(t)\,dt = \left[ f^*\,t - \frac{{\Delta f}}{{2\omega}}\cos(\omega t) - \frac{{\Delta f}}{{2\omega}}\cos(2\omega t) \right]_{{0}}^{{{a4['hari']}}} = {self._fmt_rp_math(a4['laba_bulanan_musiman'])}$",
+            ],
+            callout={
+                "title": f"Akumulasi Laba {a4['hari']} Hari",
+                "text": (
+                    f"Gelombang Penjualan = {self._fmt_rp(a4['laba_bulanan_musiman'])}  |  "
+                    f"Dibandingkan Laba Datar ({a4['hari']} × f*) = {self._fmt_rp(a4['laba_bulanan_datar'])}"
+                ),
+                "tone": "blue",
+            },
+            accent="#0369a1",
+        )
+
+        # 6. B.5
+        samples_txt = "  |  ".join(f"x = {qv:g} → Rp {av:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") for qv, av in b5["samples"])
+        self._add_paper_section(
+            body,
+            heading="6. Teorema Dasar Kalkulus I & L'Hôpital — Pola PDF B.5",
+            math_lines=[
+                rf"$\lim_{{x \to 0}} \frac{{1}}{{x}}\int_{{0}}^{{x}} \mathrm{{MC}}(t)\,dt = \lim_{{x \to 0}} \frac{{\frac{{d}}{{dx}}\int_{{0}}^{{x}} ({two_a_s}t + {b_s})\,dt}}{{\frac{{d}}{{dx}}[x]}} = \lim_{{x \to 0}} ({two_a_s}x + {b_s}) = {self._fmt_rp_math(b5['limit_eksak'])}$",
+            ],
+            bullets=[f"Konvergensi AVC(x) saat x → 0⁺: {samples_txt}"],
+            accent="#be123c",
+        )
 
         # Gambar 4 panel grafik integral UMKM
         is_dark = ctk.get_appearance_mode().lower() == "dark"
@@ -1580,23 +1982,24 @@ Referensi Ilmiah:
             ax.set_xlabel(xl, fontsize=8, color=tc)
             ax.set_ylabel(yl, fontsize=8, color=tc)
             ax.tick_params(colors=tc, labelsize=7.5)
+            ax.yaxis.set_major_formatter(self._rp_axis_formatter())
             ax.grid(True, linestyle="--", alpha=0.5, color=gc)
 
-        # Panel 1: B.3 |P'(x)|
+        # Panel 1: B.3 |f'(x)|
         ax1 = self.int_umkm_fig.add_subplot(gs[0, 0])
-        _st(ax1, "B.3: Luas |P'(x)| = |MR - MC| (Naik vs Over-Produksi)", "Porsi (x)", "Rp/porsi")
+        _st(ax1, "B.3: Luas |f'(x)| = |MR - MC| (Naik vs Over-Produksi)", "Porsi (x)", "Rp/porsi")
         fp_arr = -2.0 * ig["a"] * q_arr + ig["alpha"]
-        ax1.plot(q_arr, np.abs(fp_arr), color="#f59e0b", linewidth=2, label="|P'(x)|")
+        ax1.plot(q_arr, np.abs(fp_arr), color="#f59e0b", linewidth=2, label="|f'(x)|")
         ax1.fill_between(q_arr, np.abs(fp_arr), 0, where=(fp_arr >= 0), color="#10b981", alpha=0.28, label="Naik Laba")
         ax1.fill_between(q_arr, np.abs(fp_arr), 0, where=(fp_arr < 0), color="#ef4444", alpha=0.28, label="Pemborosan")
-        ax1.legend(loc="upper right", fontsize=7, facecolor=bg, labelcolor=tc)
+        ax1.legend(loc="upper center", fontsize=7, facecolor=bg, labelcolor=tc)
 
-        # Panel 2: B.4 |P(x)|
+        # Panel 2: B.4 |f(x)|
         ax2 = self.int_umkm_fig.add_subplot(gs[0, 1])
-        _st(ax2, "B.4: Luas |P(x)| (Surplus Laba & Defisit Dibalik)", "Porsi (x)", "Rupiah")
+        _st(ax2, "B.4: Luas |f(x)| (Surplus Laba & Defisit Dibalik)", "Porsi (x)", "Rupiah")
         f_arr = -ig["a"] * (q_arr ** 2) + ig["alpha"] * q_arr - ig["c"]
-        ax2.plot(q_arr, np.abs(f_arr), color="#3b82f6", linewidth=2, label="|P(x)|")
-        ax2.plot(q_arr, f_arr, color="#94a3b8", linestyle="--", linewidth=1, label="P(x) asli")
+        ax2.plot(q_arr, np.abs(f_arr), color="#3b82f6", linewidth=2, label="|f(x)|")
+        ax2.plot(q_arr, f_arr, color="#94a3b8", linestyle="--", linewidth=1, label="f(x) asli")
         ax2.fill_between(q_arr, np.abs(f_arr), 0, where=(f_arr >= 0), color="#10b981", alpha=0.28, label="Laba (+)")
         ax2.fill_between(q_arr, np.abs(f_arr), 0, where=(f_arr < 0), color="#ef4444", alpha=0.25, label="Defisit (-)")
         ax2.legend(loc="upper left", fontsize=7, facecolor=bg, labelcolor=tc)
@@ -1604,48 +2007,102 @@ Referensi Ilmiah:
         # Panel 3: A.3 AC(x) & B.1 VC(x*)
         ax3 = self.int_umkm_fig.add_subplot(gs[1, 0])
         _st(ax3, "A.3 & B.1: Luas ∫MC(x)dx = VC(x*) & Kurva AC(x)", "Porsi (x)", "Rp/porsi")
-        q_pos = np.linspace(max(1.0, ig["q_max"] * 0.03), ig["q_max"], 350)
+        q_pos = np.linspace(max(1.0, ig["q_max"] * 0.02), ig["q_max"], 350)
         mc_pos = 2.0 * ig["a"] * q_pos + ig["b"]
         ac_pos = ig["a"] * q_pos + ig["b"] + ig["c"] / q_pos
         ax3.plot(q_pos, mc_pos, color="#ef4444", linewidth=2, label="MC(x) = 2ax + b")
         ax3.plot(q_pos, ac_pos, color="#8b5cf6", linewidth=2, label="AC(x) = ax + b + c/x")
         ax3.fill_between(q_pos, mc_pos, 0, where=(q_pos <= ig["q_opt"]), color="#ef4444", alpha=0.2, label="VC(x*)")
-        ax3.set_ylim(0, min(max(mc_pos) * 1.4, max(ac_pos)))
-        ax3.legend(loc="upper right", fontsize=7, facecolor=bg, labelcolor=tc)
+        y_top_ac = max(1000.0, float(np.max(mc_pos)) * 1.12, float(np.percentile(ac_pos, 92)))
+        ax3.set_ylim(0, y_top_ac)
+        ax3.legend(loc="lower right", fontsize=7, facecolor=bg, labelcolor=tc)
 
         # Panel 4: A.4/B.2 Proyeksi Laba 30 Hari
         ax4 = self.int_umkm_fig.add_subplot(gs[1, 1])
-        _st(ax4, f"A.4/B.2: Proyeksi Laba Harian {a4['hari']} Hari (Gelombang)", "Hari ke-t", "Laba/Hari (Rp)")
+        _st(ax4, f"A.4/B.2: Proyeksi Laba {a4['hari']} Hari (Gelombang)", "Hari ke-t", "Laba/Hari (Rp)")
         t_arr = np.linspace(0.0, float(a4["hari"]), 300)
         l_arr = ig["p_opt"] + a4["delta_p"] * (0.5 * np.sin(a4["omega"] * t_arr) + np.sin(2.0 * a4["omega"] * t_arr))
         ax4.plot(t_arr, l_arr, color="#10b981", linewidth=2, label="L(t) Harian")
-        ax4.axhline(ig["p_opt"], color="#f59e0b", linestyle="--", linewidth=1.2, label="P* Rata-rata")
+        ax4.axhline(ig["p_opt"], color="#f59e0b", linestyle="--", linewidth=1.2, label="f* Rata-rata")
         ax4.fill_between(t_arr, l_arr, 0, where=(l_arr >= 0), color="#10b981", alpha=0.18)
         ax4.fill_between(t_arr, l_arr, 0, where=(l_arr < 0), color="#ef4444", alpha=0.18)
         ax4.legend(loc="lower right", fontsize=7, facecolor=bg, labelcolor=tc)
 
-        self.int_umkm_fig.subplots_adjust(top=0.92, bottom=0.10, left=0.09, right=0.97, hspace=0.48, wspace=0.28)
+        self.int_umkm_fig.subplots_adjust(top=0.92, bottom=0.10, left=0.11, right=0.97, hspace=0.48, wspace=0.30)
         self.int_umkm_canvas.draw()
 
     def _update_pdf_solver(self):
-        if not hasattr(self, "pdf_soal_menu"):
+        if not hasattr(self, "pdf_soal_menu") or not hasattr(self, "int_pdf_paper_body"):
             return
-        judul = self.pdf_soal_menu.get()
-        kode = self._pdf_judul_to_kode.get(judul, "B.4")
-        x_val = self._parse_number_input(self.pdf_x_entry.get())
-        if x_val is None:
-            x_val = 2.0
+        try:
+            judul = self.pdf_soal_menu.get()
+            kode = self._pdf_judul_to_kode.get(judul, "B.4")
+            raw_x = self.pdf_x_entry.get()
+            x_val = self._parse_number_input(raw_x)
+            note_invalid_x = None
+            if x_val is None or abs(x_val) > 100.0:
+                x_val = 2.0
+                if raw_x.strip():
+                    note_invalid_x = "Nilai x uji tidak valid atau di luar rentang [-100, 100], otomatis memakai x = 2."
 
-        hasil = evaluasi_soal_pdf(kode, x_uji=x_val)
-        teks = (
-            f"Soal [{hasil['kode']}]: {hasil['soal']}\n"
-            f"Hasil Eksak: {hasil['hasil_eksak']}\n"
-            f"-----------------------------------------------------------------------------------\n"
-            f"{hasil['langkah']}\n"
-            f"-----------------------------------------------------------------------------------\n"
-            f"Verifikasi Komputasi: {hasil['verifikasi']}"
+            hasil = evaluasi_soal_pdf(kode, x_uji=x_val)
+            x_shown = float(hasil.get("x_eval", x_val))
+            body = self.int_pdf_paper_body
+            self._clear_paper_body(body)
+            self._add_paper_header(
+                body,
+                title=f"Pembahasan Soal Integral PDF [{hasil['kode']}]",
+                subtitle=judul,
+                chips=[
+                    f"Kode: {hasil['kode']}",
+                    f"Jenis: {str(hasil.get('jenis', '-')).replace('_', ' ').title()}",
+                    f"Nilai Uji x = {x_shown:g}",
+                ],
+            )
+            if note_invalid_x:
+                self._add_callout_box(body, "Penyesuaian Nilai Uji", note_invalid_x, tone="amber")
+            elif abs(x_shown - x_val) > 1e-6:
+                self._add_callout_box(
+                    body,
+                    "Penyesuaian Domain Uji",
+                    f"Titik x = {x_val:g} berada di luar domain aman atau dekat asimtot, sehingga verifikasi memakai x = {x_shown:g}.",
+                    tone="amber",
+                )
+        except Exception as err:
+            body = self.int_pdf_paper_body
+            self._clear_paper_body(body)
+            self._add_callout_box(body, "Gagal Memuat Soal Integral PDF", f"Terjadi kendala evaluasi: {err}", tone="amber")
+            return
+        self._add_paper_section(
+            body,
+            heading="Soal & Hasil Eksak",
+            math_lines=[
+                r"$\mathrm{Soal:}\quad$ " + hasil["latex_soal"],
+                r"$\mathrm{Hasil\ Eksak:}\quad$ " + hasil["latex_hasil"],
+            ],
+            accent="#1e3a8a",
         )
-        self.pdf_result_lbl.configure(text=teks)
+        self._add_paper_section(
+            body,
+            heading="Langkah Penyelesaian Analitis",
+            math_lines=list(hasil["latex_langkah"]),
+            callout=(
+                {
+                    "title": "Catatan Penulisan Lembar PDF (A.3)",
+                    "text": "Pada lembar PDF asli tertulis '6|x|', sedangkan antiturunan analitis baku dari ∫ (6/x) dx adalah 6 ln|x| sebagaimana ditampilkan pada langkah dan grafik.",
+                    "tone": "amber",
+                }
+                if hasil["kode"] == "A.3"
+                else None
+            ),
+            accent="#0f766e",
+        )
+        self._add_callout_box(
+            body,
+            title="Verifikasi Komputasi Numerik",
+            text=hasil["verifikasi"],
+            tone="emerald",
+        )
 
         is_dark = ctk.get_appearance_mode().lower() == "dark"
         bg = "#18181b" if is_dark else "#ffffff"
@@ -1701,11 +2158,14 @@ Referensi Ilmiah:
         total_modal_hari = modal_bahan_hari + self.c
 
         # Update kartu ringkas di sidebar
+        ac_opt = res.get("ac_opt", self.b)
+        tetap_per_porsi = (self.c / q_opt) if q_opt > 0 else self.c
         self.tasik_segmen_lbl.configure(text=f"Segmen: {est['segmen']}")
         self.tasik_summary_lbl.configure(
             text=(
                 f"Modal/Porsi (b): Rp {self.b:,.0f} (kisaran Rp {est['b_min']:,.0f} - Rp {est['b_max']:,.0f})\n"
-                f"Tetap/Hari (c): Rp {self.c:,.0f}/hari (non-borongan)\n"
+                f"Tetap/Hari (c): Rp {self.c:,.0f}/hari (beban ~Rp {tetap_per_porsi:,.0f}/porsi)\n"
+                f"Total Modal/Porsi di x*: Rp {ac_opt:,.0f} < Jual Rp {self.p:,.0f}\n"
                 f"Belanja Harian ({q_harian} {satuan}): Rp {total_modal_hari:,.0f}/hari"
             ).replace(",", ".")
         )
@@ -1807,34 +2267,53 @@ Referensi Ilmiah:
 
     def _update_summary_cards(self):
         res = self.calc_results
+        a = res["a"]
         q_opt = res["q_opt"]
-        p_opt = res["p_opt"]
-        c = res["c"]
         x_kiri = res["x_kiri"]
         x_kanan = res["x_kanan"]
         pp_kiri = res["p_prime_kiri"]
         pp_kanan = res["p_prime_kanan"]
+        f_max_dom = res["f_max_dom"]
+        x_max_dom = res["x_max_dom"]
+        f_min = res["f_min"]
+        x_min = res["x_min"]
+        min_both = res["min_both_ends"]
 
-        self.card_q_opt["val_lbl"].configure(text=f"x* = {q_opt:.1f} porsi")
-        self.card_profit_max["val_lbl"].configure(text=f"Rp {p_opt:,.0f}".replace(",", "."))
-
-        if res["q_bep1"] is not None and res["q_bep2"] is not None:
-            self.card_bep["val_lbl"].configure(text=f"-Rp {c:,.0f}".replace(",", "."))
-            self.card_bep["sub_lbl"].configure(text=f"BEP: {res['q_bep1']:.1f} & {res['q_bep2']:.1f} porsi")
+        if a > 0:
+            self.card_q_opt["val_lbl"].configure(text=f"x* = {q_opt:.1f} porsi")
+            if 0.0 <= q_opt <= float(self.q_max):
+                self.card_q_opt["sub_lbl"].configure(text="Syarat Stasioner f'(x) = 0")
+            else:
+                self.card_q_opt["sub_lbl"].configure(text=f"Di luar [0, {self.q_max}]; opt di x={x_max_dom:g}")
         else:
-            self.card_bep["val_lbl"].configure(text=f"-Rp {c:,.0f}".replace(",", "."))
-            self.card_bep["sub_lbl"].configure(text="Tidak ada BEP real")
+            self.card_q_opt["val_lbl"].configure(text=f"x_maks = {x_max_dom:g} porsi")
+            self.card_q_opt["sub_lbl"].configure(text="Model linear (a = 0)")
+
+        self.card_profit_max["val_lbl"].configure(text=self._fmt_rp(f_max_dom))
+        if a > 0 and 0.0 <= q_opt <= float(self.q_max):
+            self.card_profit_max["sub_lbl"].configure(text=f"Laba puncak pada x* = {q_opt:.1f} porsi")
+        else:
+            self.card_profit_max["sub_lbl"].configure(text=f"Maks ujung domain x = {x_max_dom:g} porsi")
+
+        self.card_bep["val_lbl"].configure(text=self._fmt_rp(f_min))
+        min_loc = f"x=0 & x={self.q_max}" if min_both else f"di x={x_min:g}"
+        if res["q_bep1"] is not None and res["q_bep2"] is not None:
+            self.card_bep["sub_lbl"].configure(
+                text=f"Min {min_loc} | BEP: {res['q_bep1']:.1f} & {res['q_bep2']:.1f}"
+            )
+        else:
+            self.card_bep["sub_lbl"].configure(text=f"Min {min_loc} | Tidak ada BEP real")
 
         if res["is_max"]:
-            self.card_test1["val_lbl"].configure(text="P'(x): (+) -> 0 -> (-)")
+            self.card_test1["val_lbl"].configure(text="f'(x): (+) -> 0 -> (-)")
             self.card_test1["sub_lbl"].configure(
-                text=f"P'({x_kiri:g})>0, P'({x_kanan:g})<0 (Maks)"
+                text=f"f'({x_kiri:g})>0, f'({x_kanan:g})<0 (Maks)"
             )
-        elif pp_kiri <= 0 and pp_kanan < 0:
-            self.card_test1["val_lbl"].configure(text="P'(x) <= 0 (Turun)")
-            self.card_test1["sub_lbl"].configure(text="Maks ujung kiri x=0 (Rugi)")
+        elif pp_kiri <= 0 and pp_kanan <= 0:
+            self.card_test1["val_lbl"].configure(text="f'(x) <= 0 (Turun)")
+            self.card_test1["sub_lbl"].configure(text="Maks ujung kiri x=0")
         else:
-            self.card_test1["val_lbl"].configure(text="P'(x) >= 0 (Naik)")
+            self.card_test1["val_lbl"].configure(text="f'(x) >= 0 (Naik)")
             self.card_test1["sub_lbl"].configure(text=f"Naik hingga x={self.q_max}")
 
     def _update_live_card(self):
@@ -1853,35 +2332,44 @@ Referensi Ilmiah:
         self.live_rev_lbl.configure(text=f"Pendapatan R(x): Rp {r:,.0f}".replace(",", "."))
         self.live_cost_lbl.configure(text=f"Biaya Total C(x): Rp {cost:,.0f}".replace(",", "."))
 
-        p_str = f"Fungsi Laba P(x): Rp {profit:,.0f}".replace(",", ".")
+        p_str = f"Fungsi Laba f(x): Rp {profit:,.0f}".replace(",", ".")
         self.live_profit_lbl.configure(text=p_str)
 
         opt_q = self.calc_results["q_opt"]
-        if abs(q - opt_q) < 0.5:
+        x_min_dom = self.calc_results["x_min"]
+        min_both = self.calc_results["min_both_ends"]
+        if abs(q - opt_q) < 0.5 and 0.0 <= opt_q <= float(self.q_max):
             self.live_status_lbl.configure(text="Status: TITIK KRITIS x* (NILAI MAKSIMUM)", text_color="#10b981")
             self.live_profit_lbl.configure(text_color="#10b981")
         elif q == 0:
-            self.live_status_lbl.configure(text="Status: UJUNG DOMAIN x=0 (NILAI MINIMUM MUTLAK)", text_color="#ef4444")
+            st_zero = "NILAI MINIMUM MUTLAK" if (x_min_dom == 0.0 or min_both) else "UJUNG KIRI / BIAYA TETAP"
+            self.live_status_lbl.configure(text=f"Status: UJUNG DOMAIN x=0 ({st_zero})", text_color="#ef4444")
+            self.live_profit_lbl.configure(text_color="#ef4444")
+        elif abs(q - float(self.q_max)) < 0.5 and (x_min_dom == float(self.q_max) or min_both):
+            self.live_status_lbl.configure(text=f"Status: UJUNG DOMAIN x={self.q_max} (NILAI MINIMUM MUTLAK)", text_color="#ef4444")
             self.live_profit_lbl.configure(text_color="#ef4444")
         elif profit > 0:
-            self.live_status_lbl.configure(text="Status: ZONA LABA POSITIF (P(x) > 0)", text_color="#3b82f6")
+            self.live_status_lbl.configure(text="Status: ZONA LABA POSITIF (f(x) > 0)", text_color="#3b82f6")
             self.live_profit_lbl.configure(text_color="#3b82f6")
         elif abs(profit) < 100:
-            self.live_status_lbl.configure(text="Status: TITIK IMPAS BEP (P(x) = 0)", text_color="#f59e0b")
+            self.live_status_lbl.configure(text="Status: TITIK IMPAS BEP (f(x) = 0)", text_color="#f59e0b")
             self.live_profit_lbl.configure(text_color="#f59e0b")
         else:
-            self.live_status_lbl.configure(text="Status: ZONA RUGI DEFISIT (P(x) < 0)", text_color="#ef4444")
+            self.live_status_lbl.configure(text="Status: ZONA RUGI DEFISIT (f(x) < 0)", text_color="#ef4444")
             self.live_profit_lbl.configure(text_color="#ef4444")
 
         if p_prime > 50:
-            laju_str = f"Laju Laba P'(x): +Rp {p_prime:,.0f} (P' > 0: kurva naik)"
+            laju_str = f"Laju Laba f'(x): +Rp {p_prime:,.0f} (f' > 0: kurva naik)".replace(",", ".")
         elif p_prime < -50:
-            laju_str = f"Laju Laba P'(x): -Rp {abs(p_prime):,.0f} (P' < 0: kurva turun)"
+            laju_str = f"Laju Laba f'(x): -Rp {abs(p_prime):,.0f} (f' < 0: kurva turun)".replace(",", ".")
         else:
-            laju_str = f"Laju Laba P'(x): Rp 0 (Titik Kritis x*: P'(x*) = 0)"
+            laju_str = "Laju Laba f'(x): Rp 0 (Titik Kritis x*: f'(x*) = 0)"
         self.live_mp_lbl.configure(text=laju_str)
 
     def _update_kalkulus_text(self):
+        if not hasattr(self, "calc_paper_body"):
+            return
+
         res = self.calc_results
         p = res["p"]
         c = res["c"]
@@ -1901,119 +2389,187 @@ Referensi Ilmiah:
         a4 = ig["a4_b2"]
         b5 = ig["b5"]
 
-        sub_lines = []
-        for idx, sub in enumerate(b4["sub_intervals"], 1):
-            tanda_formula = "P(x)" if "Positif" in sub["tanda"] else "-(P(x))"
-            sub_lines.append(
-                f"      * Sub-interval {idx} [{sub['lo']:.2f} .. {sub['hi']:.2f}] ({sub['tanda']} -> {tanda_formula}): "
-                f"Luas = Rp {sub['nilai_abs']:,.0f}"
-            )
-        sub_txt = "\n".join(sub_lines)
+        p_s = self._fmt_num(p)
+        c_s = self._fmt_num(c)
+        b_s = self._fmt_num(b)
+        alpha_s = self._fmt_num(alpha)
+        a_s = f"{a:g}"
+        half_a_s = f"{a / 2.0:g}"
+        two_a_s = f"{2.0 * a:g}"
+        four_a_s = f"{4.0 * a:g}"
+        q_max_s = f"{self.q_max:g}"
+        fx_tex = self._signed_poly_terms(-a, alpha, -c, "x")
+        fp_tex = self._signed_poly_terms(0, -2.0 * a, alpha, "x")
+        fp_t_tex = self._signed_poly_terms(0, -2.0 * a, alpha, "t")
 
-        bep_block = ""
-        if res["q_bep1"] is not None:
-            bep_block = (
-                f"   * Titik Impas Bawah (BEP 1) : x1 = {res['q_bep1']:.2f} porsi/hari\n"
-                f"   * Titik Impas Atas (BEP 2)  : x2 = {res['q_bep2']:.2f} porsi/hari\n"
-                f"   * Rentang Produksi Untung (P(x) > 0): ({res['q_bep1']:.2f} ; {res['q_bep2']:.2f}) porsi/hari\n"
-                f"   * Batas Aman Minimum: Minimal {int(np.ceil(res['q_bep1']))} porsi | Batas Atas: {int(np.floor(res['q_bep2']))} porsi"
-            )
+        body = self.calc_paper_body
+        self._clear_paper_body(body)
+        self._add_paper_header(
+            body,
+            title="Penerapan Kalkulus UMKM: Integral, Substitusi u, Nilai Mutlak & Optimasi f(x)",
+            subtitle="Formulasi fungsi f(x), R(x), C(x), uji turunan pertama, teorema nilai ekstrem, dan penerapan pola rumus PDF A.1–A.5 & B.1–B.5.",
+            chips=[
+                f"Harga p = {self._fmt_rp(p)}",
+                f"Tetap c = {self._fmt_rp(c)}",
+                f"Modal b = {self._fmt_rp(b)}",
+                f"Koef. a = {a_s}",
+                f"Domain 0 ≤ x ≤ {q_max_s}",
+            ],
+        )
+
+        # I. Formulasi via FTC I
+        self._add_paper_section(
+            body,
+            heading="I. Formulasi Fungsi f(x), R(x) & C(x) dari Teorema Dasar Kalkulus I (Pola PDF B.5)",
+            prose=(
+                f"Misalkan x adalah jumlah porsi produksi harian pada domain tertutup [0, {q_max_s}] "
+                f"dengan nilai awal biaya tetap harian C(0) = c = {self._fmt_rp(c)}:"
+            ),
+            math_lines=[
+                rf"$\mathrm{{MR}}(x) = R'(x) = p = {self._fmt_rp_math(p)} \;\Rightarrow\; R(x) = \int_{{0}}^{{x}} {p_s}\,dt = {p_s}x$",
+                rf"$\mathrm{{MC}}(x) = C'(x) = {two_a_s}x + {b_s} \;\Rightarrow\; C(x) = {c_s} + \int_{{0}}^{{x}} ({two_a_s}t + {b_s})\,dt = {a_s}x^2 + {b_s}x + {c_s}$",
+                rf"$f'(x) = \mathrm{{MR}}(x) - \mathrm{{MC}}(x) = -{two_a_s}x + ({p_s} - {b_s}) = {fp_tex}$",
+                rf"$f(x) = -c + \int_{{0}}^{{x}} f'(t)\,dt = -{c_s} + \int_{{0}}^{{x}} ({fp_t_tex})\,dt = {fx_tex}$",
+                rf"$\mathrm{{Uji\ FTC\ I:}}\quad \frac{{d}}{{dx}}\left[f(x)\right] = f'(x) = {fp_tex}$",
+            ],
+            accent="#1e3a8a",
+        )
+
+        # II. Titik Kritis, Uji Turunan Pertama, Nilai Ekstrem & BEP
+        sign_kiri_tex = r"\mathrm{POSITIF}\ (+) \Rightarrow \mathrm{Kurva\ NAIK}" if res["p_prime_kiri"] > 0 else r"\mathrm{NEGATIF/NOL} \Rightarrow \mathrm{Kurva\ TURUN}"
+        sign_kanan_tex = r"\mathrm{NEGATIF}\ (-) \Rightarrow \mathrm{Kurva\ TURUN}" if res["p_prime_kanan"] < 0 else r"\mathrm{POSITIF/NOL} \Rightarrow \mathrm{Kurva\ NAIK}"
+        garis_tanda = (
+            f"[0]  {'+++ (naik) +++' if res['p_prime_kiri'] > 0 else '--- (turun) ---'}  "
+            f"[x* = {q_opt:.2f}]  {'--- (turun) ---' if res['p_prime_kanan'] < 0 else '+++ (naik) +++'}  [{q_max_s}]"
+        )
+        if alpha > 0 and abs(q_opt - alpha / (2.0 * a)) < 1e-6:
+            stasioner_line = rf"$\mathrm{{Syarat\ Stasioner:}}\ f'(x) = 0 \Leftrightarrow \mathrm{{MR}} = \mathrm{{MC}} \;\Rightarrow\; {two_a_s}x = {alpha_s} \;\Rightarrow\; x^* = \frac{{{alpha_s}}}{{{two_a_s}}} = {q_opt:.2f}\ \mathrm{{porsi/hari}}$"
         else:
-            bep_block = "   * Diskriminan negatif: Tidak ada titik impas real pada kombinasi parameter ini."
+            stasioner_line = rf"$\mathrm{{Syarat\ Stasioner:}}\ {fp_tex} = 0,\quad \mathrm{{titik\ batas\ domain}}\ x^* = {q_opt:.2f}\ \mathrm{{porsi/hari}}$"
 
-        penjelasan = f"""
-========================================================================================
-      PENERAPAN KALKULUS UMKM: INTEGRAL, SUBSTITUSI u, NILAI MUTLAK, & OPTIMASI P(x)
-                    (MENGIKUTI KODE RUMUS PADA LEMBAR PDF A.1-A.5 & B.1-B.5)
-========================================================================================
+        min_at = f"0 & {q_max_s}" if res["min_both_ends"] else f"{res['x_min']:g}"
+        ii_bullets = [
+            f"Garis Tanda f'(x):  {garis_tanda}",
+            f"Nilai Maksimum Mutlak: f({res['x_max_dom']:.2f}) = {self._fmt_rp(res['f_max_dom'])}/hari (Omzet R = {self._fmt_rp(r_opt)}, Biaya C = {self._fmt_rp(c_opt)})",
+            f"Nilai Ujung Domain: f(0) = {self._fmt_rp(res['f_zero'])}/hari  |  f({q_max_s}) = {self._fmt_rp(res['f_end'])}/hari",
+            f"Nilai Minimum Mutlak (Teorema Nilai Ekstrem): min(f(0), f({q_max_s})) = {self._fmt_rp(res['f_min'])}/hari (di x = {min_at})",
+            f"Diskriminan BEP: D = ({alpha_s})² - 4({a_s})({c_s}) = {self._fmt_num(res['D'])}",
+        ]
+        if res["q_bep1"] is not None:
+            ii_bullets.extend([
+                f"Titik Impas: BEP₁ = {res['q_bep1']:.2f} porsi/hari  |  BEP₂ = {res['q_bep2']:.2f} porsi/hari",
+                f"Rentang Untung (f(x) > 0): ({res['q_bep1']:.2f} ; {res['q_bep2']:.2f})  →  Batas aman: {int(np.ceil(res['q_bep1']))} s.d. {int(np.floor(res['q_bep2']))} porsi/hari",
+            ])
+        else:
+            ii_bullets.append("Diskriminan negatif: Tidak ada titik impas real pada kombinasi parameter ini.")
 
-I. FORMULASI FUNGSI P(x), R(x), & C(x) DARI TEOREMA DASAR KALKULUS I (POLA PDF B.5)
-----------------------------------------------------------------------------------------
-Misalkan x = jumlah porsi produksi harian (domain tertutup: 0 <= x <= {self.q_max}).
-Dari laju marjinal usaha di pasar:
-   * Pendapatan Marjinal : MR(x) = R'(x) = p = Rp {p:,.0f} / porsi
-   * Biaya Marjinal      : MC(x) = C'(x) = {2*a:.0f}x + {b:,.0f}
-   * Laba Marjinal       : P'(x) = MR(x) - MC(x) = -{2*a:.0f}x + ({p:,.0f} - {b:,.0f}) = -{2*a:.0f}x + {alpha:,.0f}
+        self._add_paper_section(
+            body,
+            heading=f"II. Titik Kritis x*, Uji Turunan Pertama f'(x) & Nilai Ekstrem [0, {q_max_s}]",
+            prose=f"Dibulatkan secara operasional menjadi {round(q_opt)} porsi/hari. Evaluasi perubahan tanda f'(x) dan ujung interval:",
+            math_lines=[
+                stasioner_line,
+                rf"$\mathrm{{Interval\ Kiri}}\ [0, {q_opt:.2f}):\ f'({res['x_kiri']:g}) = {self._fmt_rp_math(res['p_prime_kiri'])}\quad \left({sign_kiri_tex}\right)$",
+                rf"$\mathrm{{Titik\ Kritis}}\ x^* = {q_opt:.2f}:\ f'({q_opt:.2f}) = 0\quad (\mathrm{{Stasioner\ /\ Puncak\ Perubahan\ Tanda}})$",
+                rf"$\mathrm{{Interval\ Kanan}}\ ({q_opt:.2f}, {q_max_s}]:\ f'({res['x_kanan']:g}) = {self._fmt_rp_math(res['p_prime_kanan'])}\quad \left({sign_kanan_tex}\right)$",
+            ],
+            bullets=ii_bullets,
+            callout={
+                "title": "Kesimpulan Uji Turunan Pertama",
+                "text": (
+                    f"Tanda f'(x) berubah dari POSITIF (+) ke NEGATIF (-) saat melewati x* = {q_opt:.2f}, terbukti f(x*) adalah MAKSIMUM MUTLAK."
+                    if res["is_max"]
+                    else "Tidak terjadi perubahan tanda (+) ke (-) di dalam interior (0, x_max); nilai ekstrem berada di ujung batas domain."
+                ),
+                "tone": "emerald" if res["is_max"] else "amber",
+            },
+            accent="#0f766e",
+        )
 
-Menggunakan Teorema Dasar Kalkulus I (antiturunan integral dengan nilai awal C(0) = c = Rp {c:,.0f}):
-   1. R(x) = ∫[0..x] MR(t) dt = ∫[0..x] {p:,.0f} dt = {p:,.0f}x
-   2. C(x) = c + ∫[0..x] MC(t) dt = {c:,.0f} + ∫[0..x] ({2*a:.0f}t + {b:,.0f}) dt = {a}x² + {b:,.0f}x + {c:,.0f}
-   3. P(x) = -c + ∫[0..x] P'(t) dt = -{c:,.0f} + ∫[0..x] (-{2*a:.0f}t + {alpha:,.0f}) dt
-      P(x) = -{a}x² + {alpha:,.0f}x - {c:,.0f}
-   (Uji FTC I: d/dx [ P(x) ] = P'(x) = -{2*a:.0f}x + {alpha:,.0f})
+        # III. Biaya Variabel Total VC(x*) via Substitusi u
+        u_lo_s = self._fmt_num(b1["u_lo"])
+        u_hi_s = self._fmt_num(b1["u_hi"])
+        self._add_paper_section(
+            body,
+            heading="III. Biaya Variabel Total VC(x*) via Substitusi u + Ubah Batas (Pola PDF B.1 & A.1)",
+            math_lines=[
+                rf"$\mathrm{{VC}}(x^*) = \int_{{0}}^{{{b1['q_hi']:.2f}}} ({two_a_s}x + {b_s})\,dx,\qquad u = {two_a_s}x + {b_s} \;\Rightarrow\; dx = \frac{{1}}{{{two_a_s}}}\,du$",
+                rf"$\mathrm{{Ubah\ batas:}}\ x = 0 \to u = {u_lo_s},\qquad x = {b1['q_hi']:.2f} \to u = {two_a_s}({b1['q_hi']:.2f}) + {b_s} = {u_hi_s}$",
+                rf"$\mathrm{{VC}}(x^*) = \frac{{1}}{{{two_a_s}}}\int_{{{u_lo_s}}}^{{{u_hi_s}}} u\,du = \left[ \frac{{u^2}}{{{four_a_s}}} \right]_{{{u_lo_s}}}^{{{u_hi_s}}} = {self._fmt_rp_math(b1['vc_substitusi'])}$",
+            ],
+            callout={
+                "title": "Verifikasi Rumus Langsung",
+                "text": f"Nilai VC(x*) dari {a_s}({b1['q_hi']:.2f})² + {b_s}({b1['q_hi']:.2f}) = {self._fmt_rp(b1['vc_langsung'])} (identik 100%).",
+                "tone": "emerald",
+            },
+            accent="#b45309",
+        )
 
-----------------------------------------------------------------------------------------
-II. TITIK KRITIS x*, UJI TURUNAN PERTAMA P'(x), & NILAI EKSTREM [0, {self.q_max}]
-----------------------------------------------------------------------------------------
-1. Syarat Stasioner P'(x) = 0  <==>  MR(x) = MC(x):
-   -{2*a:.0f}x + {alpha:,.0f} = 0  ==>  {2*a:.0f}x = {alpha:,.0f}
-   x* = {alpha:,.0f} / {2*a:.0f} = {q_opt:.2f} porsi/hari  (dibulatkan: {round(q_opt)} porsi/hari)
+        # IV. AC(x) Pecah Polinom & ln|x|
+        self._add_paper_section(
+            body,
+            heading="IV. Integral Biaya Rata-Rata AC(x) via Pecah Polinom & ln|x| (Pola PDF A.3)",
+            math_lines=[
+                rf"$\mathrm{{AC}}(x) = \frac{{C(x)}}{{x}} = \frac{{{a_s}x^2 + {b_s}x + {c_s}}}{{x}} = {a_s}x + {b_s} + \frac{{{c_s}}}{{x}}$",
+                rf"$\int_{{{a3['q1']:.0f}}}^{{{a3['q2']:.0f}}} \mathrm{{AC}}(x)\,dx = \left[ {half_a_s}x^2 + {b_s}x + {c_s}\ln|x| \right]_{{{a3['q1']:.0f}}}^{{{a3['q2']:.0f}}} = {self._fmt_rp_math(a3['integral_ac'])}$",
+            ],
+            callout={
+                "title": f"Rata-Rata AC(x) pada [{a3['q1']:.0f}, {a3['q2']:.0f}]",
+                "text": f"Biaya rata-rata per porsi pada interval produksi tersebut = {self._fmt_rp(a3['rata_rata_ac'])}/porsi.",
+                "tone": "slate",
+            },
+            accent="#7c3aed",
+        )
 
-2. Uji Turunan Pertama (First Derivative Test) & Perubahan Tanda P'(x):
-   * Interval Kiri  (0 <= x < {q_opt:.2f}), titik uji x = {res['x_kiri']:g}:
-     P'({res['x_kiri']:g}) = -{2*a:.0f}({res['x_kiri']:g}) + {alpha:,.0f} = Rp {res['p_prime_kiri']:+,.0f}  ({'POSITIF (+) -> kurva NAIK' if res['p_prime_kiri'] > 0 else 'NEGATIF/NOL -> kurva TURUN'})
-   * Titik Kritis (x* = {q_opt:.2f}):
-     P'({q_opt:.2f}) = 0  (Stasioner / Puncak Perubahan Tanda)
-   * Interval Kanan ({q_opt:.2f} < x <= {self.q_max}), titik uji x = {res['x_kanan']:g}:
-     P'({res['x_kanan']:g}) = -{2*a:.0f}({res['x_kanan']:g}) + {alpha:,.0f} = Rp {res['p_prime_kanan']:+,.0f}  ({'NEGATIF (-) -> kurva TURUN' if res['p_prime_kanan'] < 0 else 'POSITIF/NOL -> kurva NAIK'})
-   * Garis Tanda P'(x):  [0] {'+++ (naik) +++' if res['p_prime_kiri'] > 0 else '--- (turun) ---'} [x* = {q_opt:.2f}] {'--- (turun) ---' if res['p_prime_kanan'] < 0 else '+++ (naik) +++'} [{self.q_max}]
-   * Kesimpulan Uji Turunan Pertama:
-     {'Tanda P\'(x) berubah dari POSITIF (+) ke NEGATIF (-) saat melewati x*, terbukti P(x*) adalah MAKSIMUM MUTLAK.' if res['is_max'] else 'Tidak terjadi perubahan tanda (+) ke (-) di dalam interior (0, x_max); ekstrem berada di batas domain.'}
+        # V. Nilai Mutlak Linier |f'(x)|
+        self._add_paper_section(
+            body,
+            heading="V. Integral Nilai Mutlak Linier |f'(x)| (Pola PDF B.3)",
+            prose=f"Pembuat nol f'(x) = 0 berada pada x* = {q_opt:.2f} (split integral di x = {b3['q_split']:.2f}):",
+            math_lines=[
+                rf"$\int_{{0}}^{{{q_max_s}}} |f'(x)|\,dx = \int_{{0}}^{{{q_max_s}}} |{fp_tex}|\,dx = {self._fmt_rp_math(b3['total_eksak'])}$",
+            ],
+            bullets=[
+                f"0 ≤ x ≤ {b3['q_split']:.2f}: f'(x) ≥ 0  →  ∫ f'(x) dx = {self._fmt_rp(b3['kenaikan_laba'])} (Kenaikan laba menuju puncak)",
+                f"{b3['q_split']:.2f} ≤ x ≤ {q_max_s}: f'(x) < 0  →  ∫ -f'(x) dx = {self._fmt_rp(b3['pengikisan_laba'])} (Pemborosan over-produksi)",
+                f"Total Integral Mutlak |f'(x)| = {self._fmt_rp(b3['total_eksak'])}",
+            ],
+            accent="#1d4ed8",
+        )
 
-3. Evaluasi Nilai Maksimum, Minimum, & Titik Impas (BEP: P(x) = 0):
-   * Nilai Maksimum Mutlak : P({q_opt:.2f}) = Rp {p_opt:,.0f}/hari  (Omzet R = Rp {r_opt:,.0f}, Biaya C = Rp {c_opt:,.0f})
-   * Nilai Minimum Awal    : P(0) = -Rp {c:,.0f}/hari
-   * Nilai Ujung Domain    : P({self.q_max}) = Rp {(-a*(self.q_max**2) + alpha*self.q_max - c):,.0f}/hari
-   * Diskriminan BEP       : D = ({alpha:,.0f})² - 4({a})({c:,.0f}) = {res['D']:,.0f}
-{bep_block}
+        # VI. Nilai Mutlak Kuadrat |f(x)|
+        b4_bullets = [
+            f"Sub-interval {idx} [{sub['lo']:.2f} .. {sub['hi']:.2f}] ({sub['tanda']} → {'f(x)' if 'Positif' in sub['tanda'] else '-f(x)'}): Luas = {self._fmt_rp(sub['nilai_abs'])}"
+            for idx, sub in enumerate(b4["sub_intervals"], 1)
+        ]
+        b4_bullets.append(
+            f"Total Area Surplus Laba (+) = {self._fmt_rp(b4['area_laba'])}  |  Total Area Defisit (-) = {self._fmt_rp(b4['area_rugi'])}"
+        )
+        self._add_paper_section(
+            body,
+            heading="VI. Integral Nilai Mutlak Kuadrat |f(x)| (Pola PDF B.4)",
+            math_lines=[
+                rf"$\int_{{0}}^{{{q_max_s}}} |f(x)|\,dx = \int_{{0}}^{{{q_max_s}}} |{fx_tex}|\,dx = {self._fmt_rp_math(b4['total_mutlak_eksak'])}$",
+                rf"$\int_{{0}}^{{{q_max_s}}} f(x)\,dx\ (\mathrm{{Netto}}) = {self._fmt_rp_math(b4['integral_netto'])},\qquad \overline{{f}} = {self._fmt_rp_math(b4['rata_laba_domain'])}/\mathrm{{hari}}$",
+            ],
+            bullets=b4_bullets,
+            accent="#0f766e",
+        )
 
-----------------------------------------------------------------------------------------
-III. BIAYA VARIABEL TOTAL VC(x*) VIA SUBSTITUSI u + UBAH BATAS (POLA PDF B.1 & A.1)
-----------------------------------------------------------------------------------------
-Menghitung VC(x*) = ∫[0..{b1['q_hi']:.2f}] ({2*a:.0f}x + {b:,.0f}) dx:
-   misal : u = {2*a:.0f}x + {b:,.0f}  ==>  du = {2*a:.0f} dx  ==>  dx = (1/{2*a:.0f}) du
-   Ubah batas integrasi:
-   * Jika x = 0,       maka u = {b1['u_lo']:,.0f}
-   * Jika x = {b1['q_hi']:.2f}, maka u = {2*a:.0f}({b1['q_hi']:.2f}) + {b:,.0f} = {b1['u_hi']:,.0f}
-   subs  = (1/{2*a:.0f}) ∫[{b1['u_lo']:,.0f}..{b1['u_hi']:,.0f}] u du
-         = [ u² / {4*a:.0f} ]_{b1['u_lo']:,.0f}^{b1['u_hi']:,.0f}
-         = Rp {b1['vc_substitusi']:,.0f}   (sama persis dengan {a}({b1['q_hi']:.2f})² + {b:,.0f}({b1['q_hi']:.2f}) = Rp {b1['vc_langsung']:,.0f})
-
-----------------------------------------------------------------------------------------
-IV. INTEGRAL BIAYA RATA-RATA AC(x) VIA PECAH POLINOM & ln|x| (POLA PDF A.3)
-----------------------------------------------------------------------------------------
-   AC(x) = C(x) / x = ({a}x² + {b:,.0f}x + {c:,.0f}) / x = {a}x + {b:,.0f} + {c:,.0f}/x
-   ∫[{a3['q1']:.0f}..{a3['q2']:.0f}] AC(x) dx = ∫[{a3['q1']:.0f}..{a3['q2']:.0f}] {a}x dx + ∫[{a3['q1']:.0f}..{a3['q2']:.0f}] {b:,.0f} dx + ∫[{a3['q1']:.0f}..{a3['q2']:.0f}] ({c:,.0f}/x) dx
-   = [ ({a}/2)x² + {b:,.0f}x + {c:,.0f} ln|x| ]_{a3['q1']:.0f}^{a3['q2']:.0f}
-   = Rp {a3['integral_ac']:,.0f}   ==>   Rata-rata AC(x) pada [{a3['q1']:.0f}, {a3['q2']:.0f}] = Rp {a3['rata_rata_ac']:,.0f}/porsi
-
-----------------------------------------------------------------------------------------
-V. INTEGRAL NILAI MUTLAK LINIER |P'(x)| (POLA PDF B.3: ∫ |x - 4| dx)
-----------------------------------------------------------------------------------------
-   ∫[0..{self.q_max}] |P'(x)| dx = ∫[0..{self.q_max}] |-{2*a:.0f}x + {alpha:,.0f}| dx
-   Pembuat nol P'(x) = 0 di x = {q_opt:.2f} (split pada x = {b3['q_split']:.2f}):
-   * 0 <= x <= {b3['q_split']:.2f}  : P'(x) >= 0  ==>  ∫ P'(x) dx  = Rp {b3['kenaikan_laba']:,.0f}  (Kenaikan laba menuju puncak)
-   * {b3['q_split']:.2f} <= x <= {self.q_max}: P'(x) < 0   ==>  ∫ -P'(x) dx = Rp {b3['pengikisan_laba']:,.0f}  (Pemborosan over-produksi)
-   * Total Integral Mutlak = Rp {b3['total_eksak']:,.0f}
-
-----------------------------------------------------------------------------------------
-VI. INTEGRAL NILAI MUTLAK KUADRAT |P(x)| (POLA PDF B.4: ∫ |x² - 3x - 4| dx)
-----------------------------------------------------------------------------------------
-   ∫[0..{self.q_max}] |P(x)| dx = ∫[0..{self.q_max}] |-{a}x² + {alpha:,.0f}x - {c:,.0f}| dx
-{sub_txt}
-   * Total Area Surplus Laba (+) = Rp {b4['area_laba']:,.0f}  |  Total Area Defisit (-) = Rp {b4['area_rugi']:,.0f}
-   * Total Integral Mutlak ∫|P(x)| dx = Rp {b4['total_mutlak_eksak']:,.0f}
-   * Integral Netto ∫ P(x) dx = Rp {b4['integral_netto']:,.0f}  |  Rata-Rata Laba Domain = Rp {b4['rata_laba_domain']:,.0f}/hari
-
-----------------------------------------------------------------------------------------
-VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA PDF B.5)
-----------------------------------------------------------------------------------------
-   * Proyeksi Laba {a4['hari']} Hari L(t) = P* + ΔP(½ sin(ωt) + sin(2ωt)), u = 2ωt:
-     ∫[0..{a4['hari']}] L(t) dt = Rp {a4['laba_bulanan_musiman']:,.0f} (vs datar 30×P* = Rp {a4['laba_bulanan_datar']:,.0f})
-   * Limit Startup (FTC I + L'Hôpital):
-     lim[x->0] (1/x) ∫[0..x] MC(t) dt = lim[x->0] (2ax + b)/1 = Rp {b5['limit_eksak']:,.0f}/porsi
-"""
-        self.calc_text_label.configure(text=penjelasan)
+        # VII. Trigonometri 30 Hari & Limit L'Hopital
+        self._add_paper_section(
+            body,
+            heading=f"VII. Proyeksi Trigonometri {a4['hari']} Hari (PDF A.4/B.2) & Limit L'Hôpital (PDF B.5)",
+            math_lines=[
+                rf"$L(t) = f^* + \Delta f\left(\frac{{1}}{{2}}\sin(\omega t) + \sin(2\omega t)\right) \;\Rightarrow\; \int_{{0}}^{{{a4['hari']}}} L(t)\,dt = {self._fmt_rp_math(a4['laba_bulanan_musiman'])}$",
+                rf"$\lim_{{x \to 0}} \frac{{1}}{{x}}\int_{{0}}^{{x}} \mathrm{{MC}}(t)\,dt = \lim_{{x \to 0}} ({two_a_s}x + {b_s}) = {self._fmt_rp_math(b5['limit_eksak'])}/\mathrm{{porsi}}$",
+            ],
+            bullets=[
+                f"Perbandingan proyeksi {a4['hari']} hari: Gelombang musiman = {self._fmt_rp(a4['laba_bulanan_musiman'])} vs datar ({a4['hari']} × f*) = {self._fmt_rp(a4['laba_bulanan_datar'])}.",
+                f"Limit L'Hôpital startup: Biaya marjinal awal tepat pada 0 porsi konvergen ke biaya bahan baku b = {self._fmt_rp(b5['limit_eksak'])}/porsi.",
+            ],
+            accent="#be123c",
+        )
 
     def _populate_table(self):
         for item in self.tree.get_children():
@@ -2029,9 +2585,9 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
 
         q_steps = list(range(0, int(self.q_max) + 1, 5))
         special_pts = [round(q_opt, 1)]
-        if q_bep1 and 0 <= q_bep1 <= self.q_max:
+        if q_bep1 is not None and 0.0 <= q_bep1 <= float(self.q_max):
             special_pts.append(round(q_bep1, 1))
-        if q_bep2 and 0 <= q_bep2 <= self.q_max:
+        if q_bep2 is not None and 0.0 <= q_bep2 <= float(self.q_max):
             special_pts.append(round(q_bep2, 1))
 
         all_q = sorted(list(set(q_steps + special_pts)))
@@ -2050,7 +2606,7 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
             if abs(q - q_opt) < 0.2:
                 status = "Optimum Max"
                 tag = "optimal"
-            elif (q_bep1 and abs(q - q_bep1) < 0.2) or (q_bep2 and abs(q - q_bep2) < 0.2):
+            elif (q_bep1 is not None and abs(q - q_bep1) < 0.2) or (q_bep2 is not None and abs(q - q_bep2) < 0.2):
                 status = "Titik Impas (BEP)"
                 tag = "bep"
             elif profit > 0:
@@ -2072,20 +2628,23 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
                 status
             )
             self.table_data_rows.append({
-                "Porsi (q)": q,
-                "Pendapatan R(q)": r,
-                "Biaya Total C(q)": cost,
-                "Keuntungan P(q)": profit,
+                "Porsi (x)": q,
+                "Pendapatan R(x)": r,
+                "Biaya Total C(x)": cost,
+                "Keuntungan f(x)": profit,
                 "Biaya Rata-Rata": ac,
                 "MR": mr,
                 "MC": mc,
-                "Turunan Pertama P'(q)": p_prime,
+                "Turunan Pertama f'(x)": p_prime,
                 "Status": status
             })
             self.tree.insert("", tk.END, values=row_val, tags=(tag,))
 
     def _export_table_csv(self):
         try:
+            if not getattr(self, "table_data_rows", None):
+                messagebox.showwarning("Data Kosong", "Tidak ada data simulasi untuk diekspor.")
+                return
             file_path = filedialog.asksaveasfilename(
                 defaultextension=".csv",
                 filetypes=[("CSV File", "*.csv"), ("Excel Spreadsheet", "*.xlsx"), ("All Files", "*.*")],
@@ -2093,11 +2652,17 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
             )
             if file_path:
                 df = pd.DataFrame(self.table_data_rows)
-                if file_path.endswith(".xlsx"):
+                if file_path.lower().endswith(".xlsx"):
                     df.to_excel(file_path, index=False)
                 else:
-                    df.to_csv(file_path, index=False)
+                    df.to_csv(file_path, index=False, encoding="utf-8-sig")
                 messagebox.showinfo("Berhasil", f"Data berhasil diekspor ke:\n{file_path}")
+        except ImportError:
+            messagebox.showerror(
+                "Modul Excel Tidak Tersedia",
+                "Ekspor format Excel (.xlsx) memerlukan pustaka 'openpyxl'.\n"
+                "Silakan pilih format CSV (.csv) yang dapat dibuka langsung di Microsoft Excel.",
+            )
         except Exception as e:
             messagebox.showerror("Gagal Ekspor", f"Terjadi kesalahan saat menyimpan file: {str(e)}")
 
@@ -2160,6 +2725,7 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
             ax.set_ylabel(ylabel, fontsize=10, color=text_color)
             ax.grid(True, linestyle="--", alpha=0.6, color=grid_color)
             ax.tick_params(colors=text_color, labelsize=9)
+            ax.yaxis.set_major_formatter(self._rp_axis_formatter())
             for spine in ax.spines.values():
                 spine.set_color(spine_color)
 
@@ -2191,43 +2757,65 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
                 "type": plot_type
             }
 
-        if mode == "Kurva Keuntungan P(x)":
+        if mode == "Kurva Keuntungan f(x)":
             ax = self.fig.add_subplot(111)
-            style_axis(ax, f"Fungsi Keuntungan P(x) = -{a}x² + {p-b:,.0f}x - {c:,.0f}",
-                       "Jumlah Porsi Produksi per Hari (x)", "Nilai Fungsi Keuntungan P(x) (Rp)")
+            style_axis(ax, f"Fungsi Keuntungan f(x) = -{a:g}x² + {self._fmt_num(p-b)}x - {self._fmt_num(c)}",
+                       "Jumlah Porsi Produksi per Hari (x)", "Nilai Fungsi Keuntungan f(x) (Rp)")
 
-            ax.plot(q_arr, profit_arr, color="#10b981", linewidth=2.5, label="Fungsi Keuntungan P(x) = R(x) - C(x)")
-            ax.axhline(0, color="#ef4444" if not is_dark else "#f87171", linestyle=":", linewidth=1.5, label="Garis Impas (P(x) = 0)")
+            ax.plot(q_arr, profit_arr, color="#10b981", linewidth=2.5, label="Fungsi Keuntungan f(x) = R(x) - C(x)")
+            ax.axhline(0, color="#ef4444" if not is_dark else "#f87171", linestyle=":", linewidth=1.5, label="Garis Impas (f(x) = 0)")
 
-            ax.fill_between(q_arr, profit_arr, 0, where=(profit_arr >= 0), color="#10b981", alpha=0.15, label="Zona Untung (P(x) >= 0)")
-            ax.fill_between(q_arr, profit_arr, 0, where=(profit_arr < 0), color="#ef4444", alpha=0.15, label="Zona Rugi (P(x) < 0)")
+            ax.fill_between(q_arr, profit_arr, 0, where=(profit_arr >= 0), color="#10b981", alpha=0.15, label="Zona Untung (f(x) >= 0)")
+            ax.fill_between(q_arr, profit_arr, 0, where=(profit_arr < 0), color="#ef4444", alpha=0.15, label="Zona Rugi (f(x) < 0)")
 
             if 0 <= q_opt <= self.q_max:
                 ax.axvline(q_opt, color="#f59e0b", linestyle="--", linewidth=1.5, alpha=0.8)
-                ax.scatter([q_opt], [p_opt], color="#f59e0b", s=90, zorder=5, label=f"Titik Kritis x*: ({q_opt:.1f} porsi, P(x*)=Rp {p_opt:,.0f})")
+                ax.scatter([q_opt], [p_opt], color="#f59e0b", s=120, zorder=5,
+                           label=f"Titik Kritis x*: ({q_opt:.1f} porsi, f(x*)={self._fmt_rp(p_opt)})")
                 ax.annotate(
-                    f"TITIK KRITIS (NILAI MAKSIMUM):\nx* = {q_opt:.1f} porsi | P'(x*) = 0\nP(x*) = Rp {p_opt:,.0f} (Maks Global)",
+                    f"TITIK KRITIS (NILAI MAKSIMUM):\nx* = {q_opt:.1f} porsi | f'(x*) = 0\nf(x*) = {self._fmt_rp(p_opt)} (Maks Global)",
                     xy=(q_opt, p_opt),
-                    xytext=(q_opt + 6, p_opt * 0.85),
+                    xytext=(-15, -85),
+                    textcoords="offset points",
+                    ha="center",
                     arrowprops=dict(facecolor="#f59e0b", shrink=0.08, width=1.5, headwidth=7),
                     fontsize=9, fontweight="bold", color=text_color,
                     bbox=dict(boxstyle="round,pad=0.4", facecolor=bg_color, edgecolor="#f59e0b", alpha=0.9)
                 )
 
-            ax.scatter([0], [-c], color="#ef4444", s=70, zorder=5, label=f"Nilai Min: (0, -Rp {c:,.0f})")
-            ax.annotate(f"NILAI MINIMUM:\nP(0) = -Rp {c:,.0f}", xy=(0, -c), xytext=(3, -c * 0.80),
-                        fontsize=8, color="#ef4444", fontweight="bold")
+            x_min = res["x_min"]
+            f_min = res["f_min"]
+            min_both = res["min_both_ends"]
+            if min_both:
+                ax.scatter([0, float(self.q_max)], [res["f_zero"], res["f_end"]], color="#ef4444", s=70, zorder=5,
+                           label=f"Nilai Min Mutlak: (0 & {self.q_max}, {self._fmt_rp(f_min)})")
+                ax.annotate(f"NILAI MINIMUM:\nf(0)=f({self.q_max})={self._fmt_rp(f_min)}", xy=(0, f_min),
+                            xytext=(14, 12), textcoords="offset points", fontsize=8, color="#ef4444", fontweight="bold")
+            elif x_min == 0.0:
+                ax.scatter([0], [f_min], color="#ef4444", s=70, zorder=5, label=f"Nilai Min Mutlak: (0, {self._fmt_rp(f_min)})")
+                ax.annotate(f"NILAI MINIMUM:\nf(0) = {self._fmt_rp(f_min)}", xy=(0, f_min),
+                            xytext=(14, 12), textcoords="offset points", fontsize=8, color="#ef4444", fontweight="bold")
+            else:
+                ax.scatter([x_min], [f_min], color="#ef4444", s=70, zorder=5, label=f"Nilai Min Mutlak: ({x_min:g}, {self._fmt_rp(f_min)})")
+                ax.annotate(f"NILAI MINIMUM:\nf({x_min:g}) = {self._fmt_rp(f_min)}", xy=(x_min, f_min),
+                            xytext=(-150, 6), textcoords="offset points", fontsize=8, color="#ef4444", fontweight="bold",
+                            arrowprops=dict(arrowstyle="->", color="#ef4444", lw=1.2))
 
-            if q_bep1 and 0 <= q_bep1 <= self.q_max:
+            bep1_y_offset = -30 if f_min < -1000 else 20
+            if q_bep1 is not None and 0.0 <= q_bep1 <= float(self.q_max):
                 ax.scatter([q_bep1], [0], color="#60a5fa", s=60, zorder=5)
-                ax.annotate(f"BEP 1: {q_bep1:.1f}\nP(x)=0", xy=(q_bep1, 0), xytext=(q_bep1 - 14, p_opt * 0.15),
+                ax.annotate(f"BEP 1: {q_bep1:.1f}\nf(x)=0", xy=(q_bep1, 0),
+                            xytext=(20, bep1_y_offset), textcoords="offset points",
+                            arrowprops=dict(arrowstyle="->", color="#60a5fa", lw=1.2),
                             fontsize=8, color="#60a5fa", fontweight="bold")
-            if q_bep2 and 0 <= q_bep2 <= self.q_max:
+            if q_bep2 is not None and 0.0 <= q_bep2 <= float(self.q_max):
                 ax.scatter([q_bep2], [0], color="#60a5fa", s=60, zorder=5)
-                ax.annotate(f"BEP 2: {q_bep2:.1f}\nP(x)=0", xy=(q_bep2, 0), xytext=(q_bep2 - 12, p_opt * 0.15),
+                ax.annotate(f"BEP 2: {q_bep2:.1f}\nf(x)=0", xy=(q_bep2, 0),
+                            xytext=(-90, 28), textcoords="offset points",
+                            arrowprops=dict(arrowstyle="->", color="#60a5fa", lw=1.2),
                             fontsize=8, color="#60a5fa", fontweight="bold")
 
-            ax.scatter([slider_q], [slider_p], color="#ec4899", s=70, zorder=6)
+            ax.scatter([slider_q], [slider_p], color="#ec4899", s=45, zorder=6)
             ax.axvline(slider_q, color="#ec4899", linestyle=":", linewidth=1.2, alpha=0.7)
 
             ax.legend(loc="upper right", framealpha=0.85, facecolor=bg_color, labelcolor=text_color, fontsize=8)
@@ -2238,17 +2826,25 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
             style_axis(ax, "Perbandingan Pendapatan Total R(x) vs Total Biaya C(x)",
                        "Jumlah Porsi Produksi per Hari (x)", "Rupiah (Rp)")
 
-            ax.plot(q_arr, r_arr, color="#3b82f6", linewidth=2.5, label=f"Pendapatan R(x) = {p:,.0f}x")
-            ax.plot(q_arr, c_arr, color="#ef4444", linewidth=2.5, label=f"Biaya Total C(x) = {a}x² + {b:,.0f}x + {c:,.0f}")
+            ax.plot(q_arr, r_arr, color="#3b82f6", linewidth=2.5, label=f"Pendapatan R(x) = {self._fmt_num(p)}x")
+            ax.plot(q_arr, c_arr, color="#ef4444", linewidth=2.5,
+                    label=f"Biaya Total C(x) = {a:g}x² + {self._fmt_num(b)}x + {self._fmt_num(c)}")
+
+            bep_rc_pts = [bv for bv in (q_bep1, q_bep2) if bv is not None and 0.0 <= bv <= float(self.q_max)]
+            if bep_rc_pts:
+                bep_lbl = " & ".join(f"{bv:.1f}" for bv in bep_rc_pts)
+                ax.scatter(bep_rc_pts, [p * bv for bv in bep_rc_pts], color="#60a5fa", s=55, zorder=5,
+                           label=f"Titik Impas BEP (R = C): {bep_lbl}")
 
             if 0 <= q_opt <= self.q_max:
                 ax.plot([q_opt, q_opt], [c_opt, r_opt], color="#10b981", linestyle="-", linewidth=3,
-                        label=f"Gap Keuntungan Max: Rp {p_opt:,.0f}")
+                        label=f"Gap Keuntungan Max: {self._fmt_rp(p_opt)}")
                 ax.scatter([q_opt, q_opt], [c_opt, r_opt], color="#10b981", s=60, zorder=5)
                 ax.annotate(
-                    f"JARAK MAKSIMAL (R - C):\nx* = {q_opt:.1f} porsi\nLaba = Rp {p_opt:,.0f}",
+                    f"JARAK MAKSIMAL (R - C):\nx* = {q_opt:.1f} porsi\nLaba = {self._fmt_rp(p_opt)}",
                     xy=(q_opt, (r_opt + c_opt) / 2),
-                    xytext=(q_opt + 8, (r_opt + c_opt) / 2),
+                    xytext=(30, -68),
+                    textcoords="offset points",
                     arrowprops=dict(facecolor="#10b981", shrink=0.08, width=1.5, headwidth=7),
                     fontsize=9, fontweight="bold", color=text_color,
                     bbox=dict(boxstyle="round,pad=0.4", facecolor=bg_color, edgecolor="#10b981", alpha=0.9)
@@ -2265,66 +2861,108 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
 
         elif mode == "Pendekatan Marjinal (MR vs MC)":
             ax = self.fig.add_subplot(111)
-            style_axis(ax, f"Optimasi Marjinal: Pendapatan Marjinal (MR) vs Biaya Marjinal (MC)",
+            style_axis(ax, "Optimasi Marjinal: Pendapatan Marjinal (MR) vs Biaya Marjinal (MC)",
                        "Jumlah Porsi Produksi per Hari (x)", "Rupiah per Porsi (Rp/porsi)")
 
-            ax.plot(q_arr, mr_arr, color="#3b82f6", linewidth=2.5, label=f"Marginal Revenue: MR(x) = R'(x) = Rp {p:,.0f}")
-            ax.plot(q_arr, mc_arr, color="#ef4444", linewidth=2.5, label=f"Marginal Cost: MC(x) = C'(x) = {2*a:.0f}x + {b:,.0f}")
+            ax.plot(q_arr, mr_arr, color="#3b82f6", linewidth=2.5, label=f"Marginal Revenue: MR(x) = R'(x) = {self._fmt_rp(p)}")
+            ax.plot(q_arr, mc_arr, color="#ef4444", linewidth=2.5, label=f"Marginal Cost: MC(x) = C'(x) = {2*a:g}x + {self._fmt_num(b)}")
+
+            y_top_mr = max(1000.0, float(np.max(mc_arr)), p) * 1.18
+            ax.set_ylim(0, y_top_mr)
+
+            ax.scatter([0], [b], color="#ef4444", s=50, zorder=5)
+            ax.annotate(f"MC(0) = {self._fmt_rp(b)}", xy=(0, b), xytext=(10, -16), textcoords="offset points",
+                        fontsize=8, fontweight="bold", color="#ef4444")
 
             if 0 <= q_opt <= self.q_max:
-                ax.scatter([q_opt], [p], color="#f59e0b", s=90, zorder=5, label=f"Titik MR = MC di x = {q_opt:.1f}")
+                ax.scatter([q_opt], [p], color="#f59e0b", s=110, zorder=5, label=f"Titik MR = MC di x* = {q_opt:.1f}")
                 ax.axvline(q_opt, color="#f59e0b", linestyle="--", linewidth=1.5, alpha=0.8)
                 ax.annotate(
-                    f"KONDISI OPTIMUM (MR = MC):\nx* = {q_opt:.1f} porsi\nTarif Marjinal = Rp {p:,.0f}",
+                    f"KONDISI OPTIMUM (MR = MC):\nx* = {q_opt:.1f} porsi\nTarif Marjinal = {self._fmt_rp(p)}",
                     xy=(q_opt, p),
-                    xytext=(q_opt + 6, p * 1.15),
+                    xytext=(125, -70),
+                    textcoords="offset points",
+                    ha="center",
                     arrowprops=dict(facecolor="#f59e0b", shrink=0.08, width=1.5, headwidth=7),
                     fontsize=9, fontweight="bold", color=text_color,
                     bbox=dict(boxstyle="round,pad=0.4", facecolor=bg_color, edgecolor="#f59e0b", alpha=0.9)
                 )
 
-            ax.fill_between(q_arr, mr_arr, mc_arr, where=(q_arr <= q_opt), color="#10b981", alpha=0.15, label="MR > MC (Keuntungan Bertambah)")
-            ax.fill_between(q_arr, mr_arr, mc_arr, where=(q_arr > q_opt), color="#ef4444", alpha=0.15, label="MR < MC (Keuntungan Berkurang)")
+            ax.fill_between(q_arr, mr_arr, mc_arr, where=(q_arr <= q_opt), interpolate=True, color="#10b981", alpha=0.15, label="MR > MC (Keuntungan Bertambah)")
+            ax.fill_between(q_arr, mr_arr, mc_arr, where=(q_arr >= q_opt), interpolate=True, color="#ef4444", alpha=0.15, label="MR < MC (Keuntungan Berkurang)")
 
-            ax.legend(loc="upper right", framealpha=0.85, facecolor=bg_color, labelcolor=text_color, fontsize=8)
+            slider_mc = 2.0 * a * slider_q + b
+            ax.scatter([slider_q], [p], color="#3b82f6", s=45, zorder=6)
+            ax.scatter([slider_q], [slider_mc], color="#ec4899", s=45, zorder=6)
+            ax.axvline(slider_q, color="#ec4899", linestyle=":", linewidth=1.2, alpha=0.7)
+
+            ax.legend(loc="upper left", framealpha=0.85, facecolor=bg_color, labelcolor=text_color, fontsize=8)
             create_hover_elements(ax, "marginal")
 
         elif mode == "Multi-Grafik (3-in-1 Dashboard)":
-            gs = self.fig.add_gridspec(2, 2, hspace=0.35, wspace=0.25)
+            gs = self.fig.add_gridspec(2, 2, hspace=0.58, wspace=0.32)
             ax1 = self.fig.add_subplot(gs[0, :])
             ax2 = self.fig.add_subplot(gs[1, 0])
             ax3 = self.fig.add_subplot(gs[1, 1])
 
-            style_axis(ax1, "Kurva Keuntungan P(x)", "Porsi (x)", "Keuntungan (Rp)")
-            ax1.plot(q_arr, profit_arr, color="#10b981", linewidth=2)
+            style_axis(ax1, "Kurva Keuntungan f(x)", "Porsi (x)", "Keuntungan (Rp)")
+            ax1.plot(q_arr, profit_arr, color="#10b981", linewidth=2, label="f(x)")
             ax1.axhline(0, color="#ef4444", linestyle=":", linewidth=1)
+            ax1.fill_between(q_arr, profit_arr, 0, where=(profit_arr >= 0), interpolate=True, color="#10b981", alpha=0.14)
+            ax1.fill_between(q_arr, profit_arr, 0, where=(profit_arr < 0), interpolate=True, color="#ef4444", alpha=0.14)
             if 0 <= q_opt <= self.q_max:
-                ax1.scatter([q_opt], [p_opt], color="#f59e0b", s=60, zorder=5)
+                ax1.scatter([q_opt], [p_opt], color="#f59e0b", s=85, zorder=5, label=f"x*={q_opt:.1f}")
                 ax1.axvline(q_opt, color="#f59e0b", linestyle="--", linewidth=1)
-            ax1.scatter([slider_q], [slider_p], color="#ec4899", s=50, zorder=6)
+            if res["min_both_ends"]:
+                ax1.scatter([0, float(self.q_max)], [res["f_zero"], res["f_end"]], color="#ef4444", s=45, zorder=5)
+            else:
+                ax1.scatter([res["x_min"]], [res["f_min"]], color="#ef4444", s=45, zorder=5)
+            if q_bep1 is not None and 0.0 <= q_bep1 <= float(self.q_max):
+                ax1.scatter([q_bep1], [0], color="#60a5fa", s=40, zorder=5)
+            if q_bep2 is not None and 0.0 <= q_bep2 <= float(self.q_max):
+                ax1.scatter([q_bep2], [0], color="#60a5fa", s=40, zorder=5)
+            ax1.scatter([slider_q], [slider_p], color="#ec4899", s=38, zorder=6)
+            ax1.axvline(slider_q, color="#ec4899", linestyle=":", linewidth=1, alpha=0.7)
+            ax1.legend(loc="upper right", fontsize=7, facecolor=bg_color, labelcolor=text_color)
             create_hover_elements(ax1, "profit")
 
             style_axis(ax2, "Pendapatan R(x) vs Biaya C(x)", "Porsi (x)", "Rupiah (Rp)")
             ax2.plot(q_arr, r_arr, color="#3b82f6", linewidth=2, label="R(x)")
             ax2.plot(q_arr, c_arr, color="#ef4444", linewidth=2, label="C(x)")
             if 0 <= q_opt <= self.q_max:
-                ax2.plot([q_opt, q_opt], [c_opt, r_opt], color="#10b981", linewidth=2)
+                ax2.plot([q_opt, q_opt], [c_opt, r_opt], color="#10b981", linewidth=2, label="Gap Max")
+            if q_bep1 is not None and 0.0 <= q_bep1 <= float(self.q_max):
+                ax2.scatter([q_bep1], [p * q_bep1], color="#60a5fa", s=35, zorder=5)
+            if q_bep2 is not None and 0.0 <= q_bep2 <= float(self.q_max):
+                ax2.scatter([q_bep2], [p * q_bep2], color="#60a5fa", s=35, zorder=5)
+            ax2.axvline(slider_q, color="#ec4899", linestyle=":", linewidth=1, alpha=0.7)
             ax2.legend(loc="upper left", fontsize=7, facecolor=bg_color, labelcolor=text_color)
             create_hover_elements(ax2, "rev_cost")
 
             style_axis(ax3, "Marjinal MR vs MC", "Porsi (x)", "Rp/porsi")
             ax3.plot(q_arr, mr_arr, color="#3b82f6", linewidth=2, label="MR")
             ax3.plot(q_arr, mc_arr, color="#ef4444", linewidth=2, label="MC")
+            ax3.set_ylim(0, max(1000.0, float(np.max(mc_arr)), p) * 1.18)
+            ax3.fill_between(q_arr, mr_arr, mc_arr, where=(q_arr <= q_opt), interpolate=True, color="#10b981", alpha=0.14)
+            ax3.fill_between(q_arr, mr_arr, mc_arr, where=(q_arr >= q_opt), interpolate=True, color="#ef4444", alpha=0.14)
             if 0 <= q_opt <= self.q_max:
-                ax3.scatter([q_opt], [p], color="#f59e0b", s=50, zorder=5)
-            ax3.legend(loc="upper right", fontsize=7, facecolor=bg_color, labelcolor=text_color)
+                ax3.scatter([q_opt], [p], color="#f59e0b", s=70, zorder=5, label=f"MR=MC ({q_opt:.1f})")
+                ax3.axvline(q_opt, color="#f59e0b", linestyle="--", linewidth=1)
+            ax3.axvline(slider_q, color="#ec4899", linestyle=":", linewidth=1, alpha=0.7)
+            ax3.legend(loc="upper left", fontsize=7, facecolor=bg_color, labelcolor=text_color)
             create_hover_elements(ax3, "marginal")
 
         if mode == "Multi-Grafik (3-in-1 Dashboard)":
-            self.fig.subplots_adjust(top=0.92, bottom=0.10, left=0.08, right=0.95, hspace=0.38, wspace=0.25)
+            self.fig.subplots_adjust(top=0.92, bottom=0.10, left=0.11, right=0.96, hspace=0.58, wspace=0.32)
         else:
-            self.fig.tight_layout()
-        self.canvas.draw()
+            try:
+                self.fig.tight_layout()
+            except Exception:
+                pass
+        try:
+            self.canvas.draw()
+        except Exception:
+            pass
 
     def _on_plot_hover(self, event):
         if not event.inaxes or event.inaxes not in self.hover_items or event.xdata is None:
@@ -2333,10 +2971,17 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
 
         active_ax = event.inaxes
         items = self.hover_items[active_ax]
-        q_raw = float(event.xdata)
+        try:
+            q_raw = float(event.xdata)
+        except (TypeError, ValueError):
+            self._hide_hover_elements()
+            return
+        if not math.isfinite(q_raw):
+            self._hide_hover_elements()
+            return
         q = max(0.0, min(float(self.q_max), q_raw))
 
-        if getattr(self, "_last_hover_q", None) is not None and abs(q - self._last_hover_q) < 0.2 and getattr(self, "_last_hover_ax", None) == active_ax:
+        if self._last_hover_q is not None and abs(q - self._last_hover_q) < 0.2 and self._last_hover_ax == active_ax:
             return
         self._last_hover_q = q
         self._last_hover_ax = active_ax
@@ -2356,9 +3001,10 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
         snap_rad = max(2.0, self.q_max * 0.025)
 
         is_near_zero = abs(q - 0) <= snap_rad
-        is_near_opt = abs(q - q_opt) <= snap_rad
-        is_near_bep1 = q_bep1 is not None and abs(q - q_bep1) <= snap_rad
-        is_near_bep2 = q_bep2 is not None and abs(q - q_bep2) <= snap_rad
+        is_near_end = abs(q - float(self.q_max)) <= snap_rad
+        is_near_opt = (0.0 <= q_opt <= float(self.q_max)) and abs(q - q_opt) <= snap_rad
+        is_near_bep1 = q_bep1 is not None and (0.0 <= q_bep1 <= float(self.q_max)) and abs(q - q_bep1) <= snap_rad
+        is_near_bep2 = q_bep2 is not None and (0.0 <= q_bep2 <= float(self.q_max)) and abs(q - q_bep2) <= snap_rad
         is_near_slider = abs(q - slider_q) <= (snap_rad * 0.8)
 
         if is_near_opt:
@@ -2367,22 +3013,27 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
             accent_col = "#f59e0b"
         elif is_near_zero:
             q = 0.0
-            label_tag = "TITIK UJUNG DOMAIN x=0 (NILAI MINIMUM MUTLAK)"
+            is_min_zero = res["x_min"] == 0.0 or res["min_both_ends"]
+            label_tag = "TITIK UJUNG DOMAIN x=0 (NILAI MINIMUM MUTLAK)" if is_min_zero else "TITIK UJUNG DOMAIN x=0 (BIAYA TETAP)"
             accent_col = "#ef4444"
-        elif is_near_bep1:
-            q = q_bep1
-            label_tag = "TITIK IMPAS BAWAH (BEP 1: P(x) = 0)"
+        elif is_near_bep1 and q_bep1 is not None:
+            q = float(q_bep1)
+            label_tag = "TITIK IMPAS BAWAH (BEP 1: f(x) = 0)"
             accent_col = "#60a5fa"
-        elif is_near_bep2:
-            q = q_bep2
-            label_tag = "TITIK IMPAS ATAS (BEP 2: P(x) = 0)"
+        elif is_near_bep2 and q_bep2 is not None:
+            q = float(q_bep2)
+            label_tag = "TITIK IMPAS ATAS (BEP 2: f(x) = 0)"
             accent_col = "#60a5fa"
+        elif is_near_end and (res["x_min"] == float(self.q_max) or res["min_both_ends"]):
+            q = float(self.q_max)
+            label_tag = f"TITIK UJUNG DOMAIN x={self.q_max} (NILAI MINIMUM MUTLAK)"
+            accent_col = "#ef4444"
         elif is_near_slider:
             q = slider_q
             label_tag = "TITIK PORSI SIMULASI AKTIF"
             accent_col = "#ec4899"
         else:
-            label_tag = "TITIK PENELUSURAN KURVA P(x)"
+            label_tag = "TITIK PENELUSURAN KURVA f(x)"
             accent_col = "#3b82f6"
 
         r = p * q
@@ -2418,37 +3069,51 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
             hline.set_visible(True)
 
             if is_near_opt:
+                min_x_lbl = f"0 & {self.q_max}" if res["min_both_ends"] else f"{res['x_min']:g}"
                 text_info = (
                     f"[{label_tag}]\n"
-                    f"Titik Kritis x*: {q:.1f} porsi/hari (P'(x*) = 0)\n"
-                    f"Nilai Maksimum P(x*): Rp {profit:,.0f}\n"
+                    f"Titik Kritis x*: {q:.1f} porsi/hari (f'(x*) = 0)\n"
+                    f"Nilai Maksimum f(x*): Rp {profit:,.0f}\n"
                     f"Fungsi Pendapatan R(x*): Rp {r:,.0f}\n"
                     f"Fungsi Biaya C(x*): Rp {cost:,.0f}\n"
                     f"Biaya Rata-Rata AC: Rp {ac:,.0f}/porsi\n"
-                    f"Turunan Pertama P'(x*): Rp 0/porsi (Kondisi Stasioner)\n"
-                    f"Uji Turunan Pertama: (+) P'({res['x_kiri']:g})>0 -> 0 -> (-) P'({res['x_kanan']:g})<0 (Maks)\n"
-                    f"Nilai Minimum Global: P(0) = -Rp {c:,.0f}\n"
+                    f"Turunan Pertama f'(x*): Rp 0/porsi (Kondisi Stasioner)\n"
+                    f"Uji Turunan Pertama: (+) f'({res['x_kiri']:g})>0 -> 0 -> (-) f'({res['x_kanan']:g})<0 (Maks)\n"
+                    f"Nilai Minimum Global: f({min_x_lbl}) = {self._fmt_rp(res['f_min'])}\n"
                     f"Status: Puncak Tertinggi Nilai Maksimum Global"
                 ).replace(",", ".")
             elif is_near_zero:
+                min_status = f"Nilai Minimum Mutlak pada Domain [0, {self.q_max}]" if (res["x_min"] == 0.0 or res["min_both_ends"]) else f"Ujung Kiri (Min Mutlak di x={res['x_min']:g}: {self._fmt_rp(res['f_min'])})"
+                f_prime_0_txt = f"+{self._fmt_rp(p - b)}" if (p - b) > 0 else self._fmt_rp(p - b)
+                f_prime_0_dir = "f' > 0" if (p - b) > 0 else ("f' < 0" if (p - b) < 0 else "f' = 0")
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Produksi (x): 0,0 porsi/hari\n"
-                    f"Nilai Minimum P(0): -Rp {c:,.0f} (Defisit Biaya Tetap)\n"
+                    f"Nilai Fungsi f(0): -Rp {c:,.0f} (Defisit Biaya Tetap)\n"
                     f"Fungsi Pendapatan R(0): Rp 0\n"
                     f"Biaya Total C(0): Rp {c:,.0f} (Fixed Cost)\n"
-                    f"Turunan Pertama P'(0): +Rp {p - b:,.0f}/porsi (P' > 0)\n"
-                    f"Status: Nilai Minimum Mutlak pada Domain [0, {self.q_max}]"
+                    f"Turunan Pertama f'(0): {f_prime_0_txt}/porsi ({f_prime_0_dir})\n"
+                    f"Status: {min_status}"
                 ).replace(",", ".")
             elif is_near_bep1 or is_near_bep2:
                 bep_name = "BEP 1 (Bawah)" if is_near_bep1 else "BEP 2 (Atas)"
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Impas ({bep_name}): {q:.1f} porsi/hari\n"
-                    f"Nilai Fungsi P(x): Rp 0 (Pulang Pokok)\n"
+                    f"Nilai Fungsi f(x): Rp 0 (Pulang Pokok)\n"
                     f"Pendapatan = Biaya: Rp {r:,.0f}\n"
-                    f"Turunan Pertama P'(x): Rp {p_prime:,.0f}/porsi\n"
-                    f"Status: Ambang Batas Wilayah Keuntungan (P(x) = 0)"
+                    f"Turunan Pertama f'(x): Rp {p_prime:,.0f}/porsi\n"
+                    f"Status: Ambang Batas Wilayah Keuntungan (f(x) = 0)"
+                ).replace(",", ".")
+            elif is_near_end and (res["x_min"] == float(self.q_max) or res["min_both_ends"]):
+                text_info = (
+                    f"[{label_tag}]\n"
+                    f"Porsi Produksi (x): {q:.1f} porsi/hari\n"
+                    f"Nilai Minimum f({self.q_max}): {self._fmt_rp(profit)}\n"
+                    f"Fungsi Pendapatan R({self.q_max}): Rp {r:,.0f}\n"
+                    f"Biaya Total C({self.q_max}): Rp {cost:,.0f}\n"
+                    f"Turunan Pertama f'({self.q_max}): {self._fmt_rp(p_prime)}/porsi\n"
+                    f"Status: Nilai Minimum Mutlak pada Domain [0, {self.q_max}]"
                 ).replace(",", ".")
             elif is_near_slider:
                 diff_s = q - q_opt
@@ -2456,24 +3121,24 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Terpilih: {q:.1f} porsi/hari ({s_note})\n"
-                    f"Fungsi Keuntungan P(x): Rp {profit:,.0f}\n"
+                    f"Fungsi Keuntungan f(x): Rp {profit:,.0f}\n"
                     f"Pendapatan Total R(x): Rp {r:,.0f}\n"
                     f"Biaya Total C(x): Rp {cost:,.0f}\n"
-                    f"Turunan Pertama P'(x): Rp {p_prime:,.0f}/porsi\n"
+                    f"Turunan Pertama f'(x): Rp {p_prime:,.0f}/porsi\n"
                     f"Status: Posisi Slider Simulasi Interaktif"
                 ).replace(",", ".")
             else:
-                st_txt = "Zona Laba Positif (P(x) > 0)" if profit > 0 else ("Titik Impas (P(x) = 0)" if abs(profit) < 1 else "Zona Rugi Defisit (P(x) < 0)")
-                rec_txt = "Tambah porsi (P'(x) > 0)" if p_prime > 50 else ("Kurangi porsi (P'(x) < 0)" if p_prime < -50 else "Puncak laba (P'(x) = 0)")
-                uji1_txt = "Monoton Naik (P'(x) > 0, kiri x*)" if p_prime > 1e-6 else ("Monoton Turun (P'(x) < 0, kanan x*)" if p_prime < -1e-6 else "Titik Balik Stasioner (P'(x) = 0)")
+                st_txt = "Zona Laba Positif (f(x) > 0)" if profit > 0 else ("Titik Impas (f(x) = 0)" if abs(profit) < 1 else "Zona Rugi Defisit (f(x) < 0)")
+                rec_txt = "Tambah porsi (f'(x) > 0)" if p_prime > 50 else ("Kurangi porsi (f'(x) < 0)" if p_prime < -50 else "Puncak laba (f'(x) = 0)")
+                uji1_txt = "Monoton Naik (f'(x) > 0, kiri x*)" if p_prime > 1e-6 else ("Monoton Turun (f'(x) < 0, kanan x*)" if p_prime < -1e-6 else "Titik Balik Stasioner (f'(x) = 0)")
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Produksi (x): {q:.1f} porsi/hari\n"
-                    f"Fungsi Keuntungan P(x): Rp {profit:,.0f}\n"
+                    f"Fungsi Keuntungan f(x): Rp {profit:,.0f}\n"
                     f"Pendapatan Total R(x): Rp {r:,.0f}\n"
                     f"Biaya Total C(x): Rp {cost:,.0f}\n"
                     f"Biaya Rata-Rata AC(x): Rp {ac:,.0f}/porsi\n"
-                    f"Turunan Pertama P'(x): Rp {p_prime:,.0f}/porsi\n"
+                    f"Turunan Pertama f'(x): Rp {p_prime:,.0f}/porsi\n"
                     f"Uji Turunan Pertama: {uji1_txt}\n"
                     f"Titik Kritis x*: {q_opt:.1f} | Nilai Maks: Rp {p_opt:,.0f}\n"
                     f"Status: {st_txt} | {rec_txt}"
@@ -2573,7 +3238,7 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
                     f"Porsi Optimum (x*): {q:.1f} porsi/hari\n"
                     f"Marginal Revenue MR: Rp {mr:,.0f}/porsi\n"
                     f"Marginal Cost MC: Rp {mc:,.0f}/porsi\n"
-                    f"Laba Marjinal P'(x*): Rp 0/porsi\n"
+                    f"Laba Marjinal f'(x*): Rp 0/porsi\n"
                     f"Kondisi Stasioner: MR = MC Tercapai\n"
                     f"Status: Titik Balik Keuntungan Maksimal"
                 ).replace(",", ".")
@@ -2598,7 +3263,7 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
                     f"Porsi Produksi (x): {q:.1f} porsi/hari\n"
                     f"Marginal Revenue MR: Rp {mr:,.0f}/porsi\n"
                     f"Marginal Cost MC: Rp {mc:,.0f}/porsi\n"
-                    f"Laju Laba P'(x): Rp {diff:,.0f}/porsi\n"
+                    f"Laju Laba f'(x): Rp {diff:,.0f}/porsi\n"
                     f"Interpretasi: {st_mc}"
                 ).replace(",", ".")
 
@@ -2614,7 +3279,9 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
         offset_y = -140 if y_frac > 0.50 else 18
         annot.set_position((offset_x, offset_y))
 
-        annot.get_bbox_patch().set_edgecolor(accent_col)
+        patch = annot.get_bbox_patch()
+        if patch is not None:
+            patch.set_edgecolor(accent_col)
         annot.set_visible(True)
 
         for other_ax, other_items in self.hover_items.items():
@@ -2626,7 +3293,10 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
                 other_items["hline"].set_visible(False)
                 other_items["annot"].set_visible(False)
 
-        self.canvas.draw_idle()
+        try:
+            self.canvas.draw_idle()
+        except Exception:
+            pass
 
     def _on_plot_leave(self, event):
         self._hide_hover_elements()
@@ -2645,9 +3315,18 @@ VII. INTEGRAL TRIGONOMETRI 30 HARI (POLA PDF A.4/B.2) & LIMIT L'HÔPITAL (POLA P
                 items["annot"].set_visible(False)
                 changed = True
         if changed:
-            self.canvas.draw_idle()
+            try:
+                self.canvas.draw_idle()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
     app = KalkulusUMKMApp()
-    app.mainloop()
+    try:
+        app.mainloop()
+    except KeyboardInterrupt:
+        try:
+            app.destroy()
+        except tk.TclError:
+            pass
