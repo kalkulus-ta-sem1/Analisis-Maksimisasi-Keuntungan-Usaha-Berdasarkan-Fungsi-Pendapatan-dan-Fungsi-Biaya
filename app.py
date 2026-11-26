@@ -1,5 +1,6 @@
 import sys
 import os
+import math
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import numpy as np
@@ -61,6 +62,8 @@ class KalkulusUMKMApp(ctk.CTk):
         self.q_max = 140
         self.slider_q = 70.0
         self.sidebar_width = 380
+        self._syncing_from_p = False
+        self._last_p_text = "15000"
 
         self.calc_results = {}
         self.hover_items = {}
@@ -165,6 +168,9 @@ class KalkulusUMKMApp(ctk.CTk):
             entry.insert(0, default_val)
             entry.pack(fill="x", pady=(0, 8))
             self.entries[key] = entry
+
+        self.entries["p"].bind("<KeyRelease>", self._on_price_change)
+        self.entries["p"].bind("<FocusOut>", self._on_price_change)
 
         btn_frame = ctk.CTkFrame(self.side_scroll, fg_color="transparent")
         btn_frame.pack(fill="x", pady=(6, 15))
@@ -722,23 +728,118 @@ Referensi Ilmiah:
             "D": D, "q_bep1": q_bep1, "q_bep2": q_bep2
         }
 
+    @staticmethod
+    def _format_synced_number(value, max_decimals=2):
+        """Format angka rapi tanpa .0 saat bilangan bulat dan bulatkan desimal seperlunya."""
+        rounded = round(float(value), max_decimals)
+        if rounded == 0 and value > 0:
+            return f"{value:.4g}"
+        if rounded.is_integer():
+            return str(int(rounded))
+        return f"{rounded:.{max_decimals}f}".rstrip("0").rstrip(".")
+
+    def _sync_slider_and_views(self):
+        """Hitung ulang model kalkulus, sesuaikan slider q dengan aman, dan perbarui tampilan."""
+        self._calculate_calculus_model()
+
+        self.q_slider.configure(to=self.q_max, number_of_steps=self.q_max)
+        q_star = max(0, min(self.q_max, round(self.calc_results["q_opt"])))
+        self.q_slider.set(q_star)
+        self.slider_q = float(q_star)
+
+        self._update_all_views()
+
+    def _on_price_change(self, event=None):
+        """Menyesuaikan input c, b, a, q_max dan model kalkulus saat input p berubah."""
+        if self._syncing_from_p:
+            return
+
+        raw = self.entries["p"].get().strip()
+        if raw == self._last_p_text:
+            return
+        self._last_p_text = raw
+
+        if raw in ("", "-", "+", ".", "-.", "+."):
+            return
+
+        try:
+            p_baru = float(raw)
+        except ValueError:
+            return
+
+        if not math.isfinite(p_baru) or p_baru <= 0:
+            return
+
+        p_base = 15000.0
+        c_base = 60000.0
+        b_base = 8000.0
+        a_base = 50.0
+
+        rasio = p_baru / p_base
+        c_baru = c_base * (0.5 + 0.5 * rasio)
+        b_baru = b_base * rasio
+        a_baru = max(10.0, round(a_base * (0.7 + 0.3 * rasio), 1))
+        q_est = max(1.0, (p_baru - b_baru) / (2.0 * a_baru))
+
+        if not all(math.isfinite(v) for v in (c_baru, b_baru, a_baru, q_est)):
+            return
+
+        q_max_baru = max(40, int(round(q_est * 2.0)))
+
+        c_text = self._format_synced_number(c_baru, max_decimals=2)
+        b_text = self._format_synced_number(b_baru, max_decimals=2)
+        a_text = self._format_synced_number(a_baru, max_decimals=1)
+        q_max_text = str(q_max_baru)
+
+        self._syncing_from_p = True
+        try:
+            updates = {
+                "c": c_text,
+                "b": b_text,
+                "a": a_text,
+                "q_max": q_max_text,
+            }
+            for key, text_val in updates.items():
+                entry = self.entries[key]
+                entry.delete(0, tk.END)
+                entry.insert(0, text_val)
+        finally:
+            self._syncing_from_p = False
+
+        c_val = float(c_text)
+        b_val = float(b_text)
+        a_val = float(a_text)
+        if p_baru > 0 and a_val > 0 and b_val >= 0 and c_val >= 0:
+            self.p = p_baru
+            self.c = c_val
+            self.b = b_val
+            self.a = a_val
+            self.q_max = q_max_baru
+            self._sync_slider_and_views()
+
     def _apply_preset(self, preset_name):
         if preset_name in self.presets:
             data = self.presets[preset_name]
-            self.entries["p"].delete(0, tk.END)
-            self.entries["p"].insert(0, str(int(data["p"])))
+            self._syncing_from_p = True
+            try:
+                self.entries["p"].delete(0, tk.END)
+                self.entries["p"].insert(0, str(int(data["p"])))
 
-            self.entries["c"].delete(0, tk.END)
-            self.entries["c"].insert(0, str(int(data["c"])))
+                self.entries["c"].delete(0, tk.END)
+                self.entries["c"].insert(0, str(int(data["c"])))
 
-            self.entries["b"].delete(0, tk.END)
-            self.entries["b"].insert(0, str(int(data["b"])))
+                self.entries["b"].delete(0, tk.END)
+                self.entries["b"].insert(0, str(int(data["b"])))
 
-            self.entries["a"].delete(0, tk.END)
-            self.entries["a"].insert(0, str(data["a"]))
+                self.entries["a"].delete(0, tk.END)
+                self.entries["a"].insert(0, str(data["a"]))
 
-            self.entries["q_max"].delete(0, tk.END)
-            self.entries["q_max"].insert(0, str(data["q_max"]))
+                self.entries["q_max"].delete(0, tk.END)
+                self.entries["q_max"].insert(0, str(data["q_max"]))
+
+                self._last_p_text = self.entries["p"].get().strip()
+            finally:
+                self._syncing_from_p = False
 
             self._on_click_calculate()
 
@@ -754,14 +855,7 @@ Referensi Ilmiah:
                 messagebox.showerror("Kesalahan Input", "Parameter p dan a harus bernilai lebih besar dari 0, serta biaya tidak boleh negatif.")
                 return
 
-            self._calculate_calculus_model()
-
-            self.q_slider.configure(to=self.q_max, number_of_steps=self.q_max)
-            q_star = max(0, min(self.q_max, round(self.calc_results["q_opt"])))
-            self.q_slider.set(q_star)
-            self.slider_q = float(q_star)
-
-            self._update_all_views()
+            self._sync_slider_and_views()
         except ValueError:
             messagebox.showerror("Format Salah", "Mohon masukkan angka numerik yang valid pada seluruh kolom parameter.")
 
