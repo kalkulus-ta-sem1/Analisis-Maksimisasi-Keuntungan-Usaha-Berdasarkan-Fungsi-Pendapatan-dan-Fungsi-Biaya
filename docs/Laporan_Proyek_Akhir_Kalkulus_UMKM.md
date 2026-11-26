@@ -257,7 +257,7 @@ Berikut adalah visualisasi grafik yang dihasilkan oleh program:
 ### 5.2 Saran
 1. **Validasi Empiris Lapangan**: Mahasiswa disarankan melakukan wawancara langsung dengan paguyuban penjual ketoprak di wilayah Tasikmalaya untuk mencatat data akuntansi aktual agar koefisien fungsi biaya lebih akurat.
 2. **Pengembangan Model Elastisitas Permintaan**: Untuk penelitian lanjutan, fungsi harga $p$ dapat dimodelkan sebagai fungsi permintaan non-linier $p(q) = p_0 - k q$ (pasar persaingan monopolistik).
-3. **Penerapan Konsep Integral**: Di masa mendatang, konsep integral dapat diterapkan untuk menghitung akumulasi keuntungan bulanan atau surplus konsumen dan produsen.
+3. **Ekspansi Simulasi Multi-Produk**: Di masa mendatang, analisis turunan pertama, titik kritis, dan nilai ekstrem dapat diperluas untuk optimasi kombinasi beberapa menu UMKM secara bersamaan.
 
 ---
 

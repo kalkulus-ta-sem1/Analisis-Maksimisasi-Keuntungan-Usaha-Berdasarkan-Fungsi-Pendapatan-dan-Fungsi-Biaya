@@ -1,1 +1,1 @@
-"""Modul perhitungan kalkulus integral dan data harga pasar UMKM."""
+"""Modul basis data harga pasar dan estimasi biaya harian UMKM."""
