@@ -1,6 +1,5 @@
 import io
 import sys
-import os
 import math
 from typing import Any, Literal
 import tkinter as tk
@@ -10,7 +9,6 @@ import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("TkAgg")
-import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.backends._backend_tk import NavigationToolbar2Tk
@@ -45,21 +43,21 @@ class KalkulusUMKMApp(ctk.CTk):
                 "c": 14500.0,
                 "b": 6700.0,
                 "a": 60.0,
-                "q_max": 140
+                "q_max": 150
             },
             "UMKM Warung Nasi Goreng": {
                 "p": 18000.0,
                 "c": 17500.0,
                 "b": 8200.0,
                 "a": 50.0,
-                "q_max": 200
+                "q_max": 210
             },
             "UMKM Kopi Susu Kekinian": {
                 "p": 22000.0,
                 "c": 21000.0,
                 "b": 6800.0,
                 "a": 75.0,
-                "q_max": 205
+                "q_max": 220
             },
             "UMKM Ketoprak (Studi Kasus Laporan UNSIL)": {
                 "p": 15000.0,
@@ -74,7 +72,7 @@ class KalkulusUMKMApp(ctk.CTk):
                 "c": 14500.0,
                 "b": 6700.0,
                 "a": 60.0,
-                "q_max": 140
+                "q_max": 150
             }
         }
 
@@ -82,7 +80,7 @@ class KalkulusUMKMApp(ctk.CTk):
         self.c: float = 14500.0
         self.b: float = 6700.0
         self.a: float = 60.0
-        self.q_max: int = 140
+        self.q_max: int = 150
         self.slider_q: float = 69.0
         self.sidebar_width = 380
         self._syncing_from_p = False
@@ -105,7 +103,6 @@ class KalkulusUMKMApp(ctk.CTk):
         self.calc_results = {}
         self.hover_items = {}
         self._math_cache: dict[tuple, ctk.CTkImage] = {}
-        self._paper_desks: list[ctk.CTkScrollableFrame] = []
         self._reporting_callback_err = False
 
         self._setup_layout()
@@ -252,7 +249,7 @@ class KalkulusUMKMApp(ctk.CTk):
             ("c", "Biaya Tetap Harian (c / FC)", "Pecahan per hari: sewa/30hr, LPG/5-6hr, listrik/30hr, alat", "14500"),
             ("b", "Modal Bahan / Porsi (b)", "Belanja harian non-borongan pasar Tasik (Rp/porsi)", "6700"),
             ("a", "Koef. Kuadrat (a)", "Disekonomi biaya (Rp/porsi²)", "60"),
-            ("q_max", "Batas Rentang Porsi", "Maksimal porsi di grafik", "140")
+            ("q_max", "Batas Rentang Porsi", "Maksimal porsi di grafik", "150")
         ]
 
         for key, label_text, desc, default_val in fields:
@@ -369,8 +366,8 @@ class KalkulusUMKMApp(ctk.CTk):
         self.q_slider = ctk.CTkSlider(
             self.side_scroll,
             from_=0,
-            to=140,
-            number_of_steps=140,
+            to=150,
+            number_of_steps=150,
             command=self._on_slider_change
         )
         self.q_slider.set(69)
@@ -378,8 +375,6 @@ class KalkulusUMKMApp(ctk.CTk):
 
         self.live_card = ctk.CTkFrame(self.side_scroll, fg_color=("gray90", "#18181b"), corner_radius=8)
         self.live_card.pack(fill="x", pady=(0, 10), padx=2)
-
-        calc_w = max(240, self.sidebar_width - 60)
 
         self.live_status_lbl = ctk.CTkLabel(
             self.live_card,
@@ -501,10 +496,13 @@ class KalkulusUMKMApp(ctk.CTk):
 
     def _configure_tabview_navbar(self):
         self.tabview.grid_columnconfigure(0, weight=1)
-        tab_sb = self.tabview._segmented_button
-        tab_sb.grid_configure(sticky="ew", padx=20, pady=(4, 0))
-        for i in range(len(tab_sb._value_list)):
-            tab_sb.grid_columnconfigure(i, weight=1, uniform="main_tabs")
+        try:
+            tab_sb = self.tabview._segmented_button
+            tab_sb.grid_configure(sticky="ew", padx=20, pady=(4, 0))
+            for i in range(len(tab_sb._value_list)):
+                tab_sb.grid_columnconfigure(i, weight=1, uniform="main_tabs")
+        except AttributeError:
+            pass
 
     def _create_summary_bar(self):
         self.summary_bar = ctk.CTkFrame(self.main_frame, fg_color="transparent")
@@ -685,7 +683,7 @@ class KalkulusUMKMApp(ctk.CTk):
 
         ctk.CTkFrame(body, width=10, height=2, fg_color="#1e3a8a").pack(fill="x", pady=(2, 12))
 
-    def _add_math_box(self, body: ctk.CTkFrame, lines: list[str], bg: str = "#f8fafc", accent: str = "#2563eb", fontsize: float = 11.0):
+    def _add_math_box(self, body: ctk.CTkFrame, lines: list[str], bg: str = "#f8fafc", fontsize: float = 11.0):
         box = ctk.CTkFrame(body, fg_color=bg, corner_radius=6, border_width=1, border_color="#cbd5e1", height=10)
         box.pack(fill="x", pady=(4, 10))
         img = self._render_math_image(lines, bg=bg, fontsize=fontsize)
@@ -736,7 +734,7 @@ class KalkulusUMKMApp(ctk.CTk):
             ).pack(anchor="w", pady=(0, 6))
 
         if math_lines:
-            self._add_math_box(sec, math_lines, accent=accent)
+            self._add_math_box(sec, math_lines)
 
         if bullets:
             for item in bullets:
@@ -754,7 +752,6 @@ class KalkulusUMKMApp(ctk.CTk):
 
         self.calc_scroll = ctk.CTkScrollableFrame(self.tab_kalkulus, fg_color=self._paper_desk_color())
         self.calc_scroll.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
-        self._paper_desks.append(self.calc_scroll)
         self.calc_paper_body = self._create_paper_sheet_frame(self.calc_scroll, row=0)
 
     def _setup_tab_tabel(self):
@@ -833,6 +830,7 @@ class KalkulusUMKMApp(ctk.CTk):
         x_scroll.grid(row=1, column=0, sticky="ew")
 
         self.tree.tag_configure("optimal", background="#064e3b", foreground="#a7f3d0")
+        self.tree.tag_configure("profit", background="#172554", foreground="#bfdbfe")
         self.tree.tag_configure("loss", background="#450a0a", foreground="#fecaca")
         self.tree.tag_configure("bep", background="#78350f", foreground="#fde68a")
 
@@ -842,7 +840,6 @@ class KalkulusUMKMApp(ctk.CTk):
 
         self.lap_scroll = ctk.CTkScrollableFrame(self.tab_laporan, fg_color=self._paper_desk_color())
         self.lap_scroll.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
-        self._paper_desks.append(self.lap_scroll)
         paper = self._create_paper_sheet_frame(self.lap_scroll, row=0)
 
         cover = ctk.CTkFrame(paper, fg_color="transparent")
@@ -1220,6 +1217,12 @@ class KalkulusUMKMApp(ctk.CTk):
             head_fg = "#ffffff"
             total_bg = "#064e3b"
             total_fg = "#a7f3d0"
+            tree_tags = {
+                "optimal": ("#064e3b", "#a7f3d0"),
+                "profit": ("#172554", "#bfdbfe"),
+                "bep": ("#78350f", "#fde68a"),
+                "loss": ("#450a0a", "#fecaca"),
+            }
         else:
             bg = "#ffffff"
             fg = "#111827"
@@ -1227,6 +1230,12 @@ class KalkulusUMKMApp(ctk.CTk):
             head_fg = "#0f172a"
             total_bg = "#d1fae5"
             total_fg = "#065f46"
+            tree_tags = {
+                "optimal": ("#d1fae5", "#065f46"),
+                "profit": ("#eff6ff", "#1e40af"),
+                "bep": ("#fef3c7", "#92400e"),
+                "loss": ("#fee2e2", "#991b1b"),
+            }
 
         style.configure(
             "Treeview",
@@ -1243,6 +1252,11 @@ class KalkulusUMKMApp(ctk.CTk):
             font=("Segoe UI", 10, "bold"),
         )
         style.map("Treeview", background=[("selected", "#2563eb")], foreground=[("selected", "#ffffff")])
+
+        sim_tree = getattr(self, "tree", None)
+        if sim_tree is not None:
+            for tag_name, (t_bg, t_fg) in tree_tags.items():
+                sim_tree.tag_configure(tag_name, background=t_bg, foreground=t_fg)
 
         for tv_name in ("var_tree", "fixed_tree", "fluktuasi_tree"):
             tv = getattr(self, tv_name, None)
@@ -1356,13 +1370,13 @@ class KalkulusUMKMApp(ctk.CTk):
         return FuncFormatter(lambda v, _pos: f"{v:,.0f}".replace(",", "."))
 
     @staticmethod
-    def _parse_number_input(raw_text: str):
+    def _parse_number_input(raw_text: str, allow_thousand_dot: bool = True):
         """Parse angka standar maupun format pemisah ribuan Indonesia (mis. 20.000 atau Rp 20.000)."""
         import re
         cleaned = raw_text.strip().replace("Rp", "").replace("rp", "").replace(" ", "")
         if not cleaned or cleaned in ("-", "+", ".", "-.", "+."):
             return None
-        if re.fullmatch(r"[+-]?\d{1,3}(\.\d{3})+", cleaned):
+        if allow_thousand_dot and re.fullmatch(r"[+-]?\d{1,3}(\.\d{3})+", cleaned):
             cleaned = cleaned.replace(".", "")
         elif "," in cleaned and "." in cleaned:
             cleaned = cleaned.replace(".", "").replace(",", ".")
@@ -1481,7 +1495,7 @@ class KalkulusUMKMApp(ctk.CTk):
         if not self.auto_tasik_var.get():
             c_val = self._parse_number_input(self.entries["c"].get())
             b_val = self._parse_number_input(self.entries["b"].get())
-            a_val = self._parse_number_input(self.entries["a"].get())
+            a_val = self._parse_number_input(self.entries["a"].get(), allow_thousand_dot=False)
             q_val = self._parse_number_input(self.entries["q_max"].get())
             if (
                 c_val is not None
@@ -1570,7 +1584,7 @@ class KalkulusUMKMApp(ctk.CTk):
                 self.entries["b"].insert(0, str(int(data["b"])))
 
                 self.entries["a"].delete(0, tk.END)
-                self.entries["a"].insert(0, str(data["a"]))
+                self.entries["a"].insert(0, self._format_synced_number(data["a"], max_decimals=2))
 
                 self.entries["q_max"].delete(0, tk.END)
                 self.entries["q_max"].insert(0, str(data["q_max"]))
@@ -1581,6 +1595,10 @@ class KalkulusUMKMApp(ctk.CTk):
 
             if data.get("static_report"):
                 self._manual_override = False
+                self._pending_price_autofill = False
+                self._on_click_calculate()
+            elif preset_name == "Kustom Parameter Sendiri":
+                self.auto_tasik_var.set(False)
                 self._pending_price_autofill = False
                 self._on_click_calculate()
             elif self.auto_tasik_var.get():
@@ -1598,7 +1616,7 @@ class KalkulusUMKMApp(ctk.CTk):
             p_val = self._parse_number_input(self.entries["p"].get())
             c_val = self._parse_number_input(self.entries["c"].get())
             b_val = self._parse_number_input(self.entries["b"].get())
-            a_val = self._parse_number_input(self.entries["a"].get())
+            a_val = self._parse_number_input(self.entries["a"].get(), allow_thousand_dot=False)
             q_val = self._parse_number_input(self.entries["q_max"].get())
 
             if p_val is None or c_val is None or b_val is None or a_val is None or q_val is None:
@@ -1708,40 +1726,49 @@ class KalkulusUMKMApp(ctk.CTk):
         self.tasik_segmen_lbl.configure(text=f"Segmen: {est['segmen']}")
         self.tasik_summary_lbl.configure(
             text=(
-                f"Modal/Porsi (b): Rp {self.b:,.0f} (kisaran Rp {est['b_min']:,.0f} - Rp {est['b_max']:,.0f})\n"
-                f"Tetap/Hari (c): Rp {self.c:,.0f}/hari (beban ~Rp {tetap_per_porsi:,.0f}/porsi)\n"
-                f"Total Modal/Porsi di x*: Rp {ac_opt:,.0f} < Jual Rp {self.p:,.0f}\n"
-                f"Belanja Harian ({q_harian} {satuan}): Rp {total_modal_hari:,.0f}/hari"
-            ).replace(",", ".")
+                f"Modal/Porsi (b): {self._fmt_rp(self.b)} (kisaran {self._fmt_rp(est['b_min'])} - {self._fmt_rp(est['b_max'])})\n"
+                f"Tetap/Hari (c): {self._fmt_rp(self.c)}/hari (beban ~{self._fmt_rp(tetap_per_porsi)}/porsi)\n"
+                f"Total Modal/Porsi di x*: {self._fmt_rp(ac_opt)} < Jual {self._fmt_rp(self.p)}\n"
+                f"Belanja Harian ({q_harian} {satuan}): {self._fmt_rp(total_modal_hari)}/hari"
+            )
         )
         if self._manual_override:
             note_txt = "Catatan: Parameter memakai nilai manual/laporan. Klik 'Lihat Rincian' untuk bandingkan dengan pasar Tasikmalaya."
         else:
             note_txt = (
                 f"{wil_cfg['label_ringkas']} • {kondisi_cfg['label_ringkas']} | "
-                f"Naik-turun modal/hr: Rp {est['modal_harian_min']:,.0f} - Rp {est['modal_harian_max']:,.0f}"
-            ).replace(",", ".")
+                f"Naik-turun modal/hr: {self._fmt_rp(est['modal_harian_min'])} - {self._fmt_rp(est['modal_harian_max'])}"
+            )
         self.tasik_note_lbl.configure(text=note_txt)
 
         if not hasattr(self, "tasik_detail_lbl"):
             return
 
+        q_ref_est = max(1, est["q_target_harian"])
+        override_info = (
+            f"\nCatatan Tabel Rincian: Tabel di bawah menampilkan estimasi referensi pasar pada q*={q_ref_est} {satuan}, "
+            "sedangkan model kalkulus aktif memakai nilai manual/laporan Anda."
+            if self._manual_override
+            else ""
+        )
         detail_txt = (
             f"Usaha: {est['nama_usaha']}   |   Wilayah: {est['wilayah']}   |   Kondisi Pasar: {est['kondisi_pasar']}\n"
-            f"Status Model: {mode_txt}   |   Harga Jual (p): Rp {self.p:,.0f}/{satuan}   ->   {est['segmen']}\n"
-            f"Modal Belanja Harian ({q_harian} {satuan}, Non-Borongan): Bahan Rp {modal_bahan_hari:,.0f} + Tetap Rp {self.c:,.0f} = Rp {total_modal_hari:,.0f}/hari\n"
-            f"Rentang Naik-Turun Harga Pasar: b = Rp {est['b_min']:,.0f}-{est['b_max']:,.0f}/{satuan} | c = Rp {est['c_min']:,.0f}-{est['c_max']:,.0f}/hari | Laba Maks Aktif = Rp {p_opt:,.0f}/hari\n"
-            f"Dasar Disekonomi (a={self.a}): {est['disekonomi_catatan']} | {est['kondisi_catatan']}"
-        ).replace(",", ".")
+            f"Status Model: {mode_txt}   |   Harga Jual (p): {self._fmt_rp(self.p)}/{satuan}   ->   {est['segmen']}\n"
+            f"Modal Belanja Harian ({q_harian} {satuan}, Non-Borongan): Bahan {self._fmt_rp(modal_bahan_hari)} + Tetap {self._fmt_rp(self.c)} = {self._fmt_rp(total_modal_hari)}/hari\n"
+            f"Rentang Naik-Turun Harga Pasar: b = {self._fmt_rp(est['b_min'])}-{self._fmt_rp(est['b_max'])}/{satuan} | c = {self._fmt_rp(est['c_min'])}-{self._fmt_rp(est['c_max'])}/hari | Laba Maks Aktif = {self._fmt_rp(p_opt)}/hari\n"
+            f"Dasar Disekonomi (a={self.a:g}): {est['disekonomi_catatan']} | {est['kondisi_catatan']}"
+            f"{override_info}"
+        )
         self.tasik_detail_lbl.configure(text=detail_txt)
+
+        self.var_tree.heading("harian", text=f"Belanja Pasar (q*={q_ref_est})")
 
         for tv in (self.var_tree, self.fixed_tree, self.fluktuasi_tree):
             for row_id in tv.get_children():
                 tv.delete(row_id)
 
-        q_ref_est = max(1, est["q_target_harian"])
         for it in est["var_items"]:
-            rentang_str = f"Rp {it['min_subtotal']:,.0f} - Rp {it['max_subtotal']:,.0f}".replace(",", ".")
+            rentang_str = f"{self._fmt_rp(it['min_subtotal'])} - {self._fmt_rp(it['max_subtotal'])}"
             belanja_item_harian = it["subtotal"] * q_ref_est
             self.var_tree.insert(
                 "",
@@ -1749,9 +1776,9 @@ class KalkulusUMKMApp(ctk.CTk):
                 values=(
                     it["komponen"],
                     it["takaran"],
-                    f"Rp {it['subtotal']:,.0f}".replace(",", "."),
+                    self._fmt_rp(it["subtotal"]),
                     rentang_str,
-                    f"Rp {belanja_item_harian:,.0f}".replace(",", "."),
+                    self._fmt_rp(belanja_item_harian),
                 ),
             )
         self.var_tree.insert(
@@ -1760,22 +1787,22 @@ class KalkulusUMKMApp(ctk.CTk):
             values=(
                 f"TOTAL MODAL VARIABEL (b) PER {satuan.upper()}",
                 f"Belanja harian untuk {q_ref_est} {satuan} (non-borongan)",
-                f"Rp {est['b']:,.0f}".replace(",", "."),
-                f"Rp {est['b_min']:,.0f} - Rp {est['b_max']:,.0f}".replace(",", "."),
-                f"Rp {est['modal_bahan_harian']:,.0f}".replace(",", "."),
+                self._fmt_rp(est["b"]),
+                f"{self._fmt_rp(est['b_min'])} - {self._fmt_rp(est['b_max'])}",
+                self._fmt_rp(est["modal_bahan_harian"]),
             ),
             tags=("total_row",),
         )
 
         for it in est["fixed_items"]:
-            rentang_fix = f"Rp {it['min_subtotal']:,.0f} - Rp {it['max_subtotal']:,.0f}".replace(",", ".")
+            rentang_fix = f"{self._fmt_rp(it['min_subtotal'])} - {self._fmt_rp(it['max_subtotal'])}"
             self.fixed_tree.insert(
                 "",
                 tk.END,
                 values=(
                     it["komponen"],
                     it["basis"],
-                    f"Rp {it['subtotal']:,.0f}".replace(",", "."),
+                    self._fmt_rp(it["subtotal"]),
                     rentang_fix,
                     it["sumber"],
                 ),
@@ -1786,9 +1813,9 @@ class KalkulusUMKMApp(ctk.CTk):
             values=(
                 "TOTAL BIAYA TETAP HARIAN (c / FC)",
                 "Pemakaian riil per hari (non-borongan)",
-                f"Rp {est['c']:,.0f}".replace(",", "."),
-                f"Rp {est['c_min']:,.0f} - Rp {est['c_max']:,.0f}".replace(",", "."),
-                f"Total modal keluar/hr: Rp {est['total_modal_harian']:,.0f}".replace(",", "."),
+                self._fmt_rp(est["c"]),
+                f"{self._fmt_rp(est['c_min'])} - {self._fmt_rp(est['c_max'])}",
+                f"Total modal keluar/hr: {self._fmt_rp(est['total_modal_harian'])}",
             ),
             tags=("total_row",),
         )
@@ -1801,11 +1828,11 @@ class KalkulusUMKMApp(ctk.CTk):
                 tk.END,
                 values=(
                     nama_sk,
-                    f"Rp {sk['b']:,.0f}".replace(",", "."),
-                    f"Rp {sk['c']:,.0f}".replace(",", "."),
+                    self._fmt_rp(sk["b"]),
+                    self._fmt_rp(sk["c"]),
                     f"{sk['q_opt']:.1f} {satuan}",
-                    f"Rp {sk['total_modal_harian']:,.0f}".replace(",", "."),
-                    f"Rp {sk['p_opt']:,.0f}".replace(",", "."),
+                    self._fmt_rp(sk["total_modal_harian"]),
+                    self._fmt_rp(sk["p_opt"]),
                 ),
                 tags=tag_sk,
             )
@@ -1874,10 +1901,10 @@ class KalkulusUMKMApp(ctk.CTk):
         p_prime = -2.0 * a * q + (p - b)
 
         self.slider_val_label.configure(text=f"Jumlah Porsi Terpilih: {q:.0f} porsi/hari")
-        self.live_rev_lbl.configure(text=f"Pendapatan R(x): Rp {r:,.0f}".replace(",", "."))
-        self.live_cost_lbl.configure(text=f"Biaya Total C(x): Rp {cost:,.0f}".replace(",", "."))
+        self.live_rev_lbl.configure(text=f"Pendapatan R(x): {self._fmt_rp(r)}")
+        self.live_cost_lbl.configure(text=f"Biaya Total C(x): {self._fmt_rp(cost)}")
 
-        p_str = f"Fungsi Laba f(x): Rp {profit:,.0f}".replace(",", ".")
+        p_str = f"Fungsi Laba f(x): {self._fmt_rp(profit)}"
         self.live_profit_lbl.configure(text=p_str)
 
         opt_q = self.calc_results["q_opt"]
@@ -2155,13 +2182,13 @@ class KalkulusUMKMApp(ctk.CTk):
 
             row_val = (
                 f"{q:g}",
-                f"Rp {r:,.0f}".replace(",", "."),
-                f"Rp {cost:,.0f}".replace(",", "."),
-                f"Rp {profit:,.0f}".replace(",", "."),
-                f"Rp {ac:,.0f}".replace(",", "."),
-                f"Rp {mr:,.0f}".replace(",", "."),
-                f"Rp {mc:,.0f}".replace(",", "."),
-                f"Rp {p_prime:,.0f}".replace(",", "."),
+                self._fmt_rp(r),
+                self._fmt_rp(cost),
+                self._fmt_rp(profit),
+                self._fmt_rp(ac),
+                self._fmt_rp(mr),
+                self._fmt_rp(mc),
+                self._fmt_rp(p_prime),
                 status
             )
             self.table_data_rows.append({
@@ -2281,6 +2308,7 @@ class KalkulusUMKMApp(ctk.CTk):
                 color=text_color,
                 fontsize=8.5,
                 fontfamily="Consolas",
+                multialignment="left",
                 zorder=20,
                 visible=False
             )
@@ -2296,7 +2324,8 @@ class KalkulusUMKMApp(ctk.CTk):
 
         if mode == "Kurva Keuntungan f(x)":
             ax = self.fig.add_subplot(111)
-            style_axis(ax, f"Fungsi Keuntungan f(x) = -{a:g}x² + {self._fmt_num(p-b)}x - {self._fmt_num(c)}",
+            fx_title_expr = self._signed_poly_terms(-a, p - b, -c, "x").replace("^2", "²")
+            style_axis(ax, f"Fungsi Keuntungan f(x) = {fx_title_expr}",
                        "Jumlah Porsi Produksi per Hari (x)", "Nilai Fungsi Keuntungan f(x) (Rp)")
 
             ax.plot(q_arr, profit_arr, color="#10b981", linewidth=2.5, label="Fungsi Keuntungan f(x) = R(x) - C(x)")
@@ -2539,7 +2568,7 @@ class KalkulusUMKMApp(ctk.CTk):
 
         is_near_zero = abs(q - 0) <= snap_rad
         is_near_end = abs(q - float(self.q_max)) <= snap_rad
-        is_near_opt = (0.0 <= q_opt <= float(self.q_max)) and abs(q - q_opt) <= snap_rad
+        is_near_opt = bool(res.get("is_max")) and (0.0 <= q_opt <= float(self.q_max)) and abs(q - q_opt) <= snap_rad
         is_near_bep1 = q_bep1 is not None and (0.0 <= q_bep1 <= float(self.q_max)) and abs(q - q_bep1) <= snap_rad
         is_near_bep2 = q_bep2 is not None and (0.0 <= q_bep2 <= float(self.q_max)) and abs(q - q_bep2) <= snap_rad
         is_near_slider = abs(q - slider_q) <= (snap_rad * 0.8)
@@ -2610,15 +2639,15 @@ class KalkulusUMKMApp(ctk.CTk):
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Titik Kritis x*: {q:.1f} porsi/hari (f'(x*) = 0)\n"
-                    f"Nilai Maksimum f(x*): Rp {profit:,.0f}\n"
-                    f"Fungsi Pendapatan R(x*): Rp {r:,.0f}\n"
-                    f"Fungsi Biaya C(x*): Rp {cost:,.0f}\n"
-                    f"Biaya Rata-Rata AC: Rp {ac:,.0f}/porsi\n"
+                    f"Nilai Maksimum f(x*): {self._fmt_rp(profit)}\n"
+                    f"Fungsi Pendapatan R(x*): {self._fmt_rp(r)}\n"
+                    f"Fungsi Biaya C(x*): {self._fmt_rp(cost)}\n"
+                    f"Biaya Rata-Rata AC: {self._fmt_rp(ac)}/porsi\n"
                     f"Turunan Pertama f'(x*): Rp 0/porsi (Kondisi Stasioner)\n"
                     f"Uji Turunan Pertama: (+) f'({res['x_kiri']:g})>0 -> 0 -> (-) f'({res['x_kanan']:g})<0 (Maks)\n"
                     f"Nilai Minimum Global: f({min_x_lbl}) = {self._fmt_rp(res['f_min'])}\n"
                     f"Status: Puncak Tertinggi Nilai Maksimum Global"
-                ).replace(",", ".")
+                )
             elif is_near_zero:
                 min_status = f"Nilai Minimum Mutlak pada Domain [0, {self.q_max}]" if (res["x_min"] == 0.0 or res["min_both_ends"]) else f"Ujung Kiri (Min Mutlak di x={res['x_min']:g}: {self._fmt_rp(res['f_min'])})"
                 f_prime_0_txt = f"+{self._fmt_rp(p - b)}" if (p - b) > 0 else self._fmt_rp(p - b)
@@ -2626,44 +2655,44 @@ class KalkulusUMKMApp(ctk.CTk):
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Produksi (x): 0,0 porsi/hari\n"
-                    f"Nilai Fungsi f(0): -Rp {c:,.0f} (Defisit Biaya Tetap)\n"
+                    f"Nilai Fungsi f(0): {self._fmt_rp(-c)} (Defisit Biaya Tetap)\n"
                     f"Fungsi Pendapatan R(0): Rp 0\n"
-                    f"Biaya Total C(0): Rp {c:,.0f} (Fixed Cost)\n"
+                    f"Biaya Total C(0): {self._fmt_rp(c)} (Fixed Cost)\n"
                     f"Turunan Pertama f'(0): {f_prime_0_txt}/porsi ({f_prime_0_dir})\n"
                     f"Status: {min_status}"
-                ).replace(",", ".")
+                )
             elif is_near_bep1 or is_near_bep2:
                 bep_name = "BEP 1 (Bawah)" if is_near_bep1 else "BEP 2 (Atas)"
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Impas ({bep_name}): {q:.1f} porsi/hari\n"
                     f"Nilai Fungsi f(x): Rp 0 (Pulang Pokok)\n"
-                    f"Pendapatan = Biaya: Rp {r:,.0f}\n"
-                    f"Turunan Pertama f'(x): Rp {p_prime:,.0f}/porsi\n"
+                    f"Pendapatan = Biaya: {self._fmt_rp(r)}\n"
+                    f"Turunan Pertama f'(x): {self._fmt_rp(p_prime)}/porsi\n"
                     f"Status: Ambang Batas Wilayah Keuntungan (f(x) = 0)"
-                ).replace(",", ".")
+                )
             elif is_near_end and (res["x_min"] == float(self.q_max) or res["min_both_ends"]):
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Produksi (x): {q:.1f} porsi/hari\n"
                     f"Nilai Minimum f({self.q_max}): {self._fmt_rp(profit)}\n"
-                    f"Fungsi Pendapatan R({self.q_max}): Rp {r:,.0f}\n"
-                    f"Biaya Total C({self.q_max}): Rp {cost:,.0f}\n"
+                    f"Fungsi Pendapatan R({self.q_max}): {self._fmt_rp(r)}\n"
+                    f"Biaya Total C({self.q_max}): {self._fmt_rp(cost)}\n"
                     f"Turunan Pertama f'({self.q_max}): {self._fmt_rp(p_prime)}/porsi\n"
                     f"Status: Nilai Minimum Mutlak pada Domain [0, {self.q_max}]"
-                ).replace(",", ".")
+                )
             elif is_near_slider:
                 diff_s = q - q_opt
                 s_note = f"+{diff_s:.1f} porsi dari opt" if diff_s > 0 else (f"{diff_s:.1f} porsi dari opt" if diff_s < 0 else "Tepat di optimum")
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Terpilih: {q:.1f} porsi/hari ({s_note})\n"
-                    f"Fungsi Keuntungan f(x): Rp {profit:,.0f}\n"
-                    f"Pendapatan Total R(x): Rp {r:,.0f}\n"
-                    f"Biaya Total C(x): Rp {cost:,.0f}\n"
-                    f"Turunan Pertama f'(x): Rp {p_prime:,.0f}/porsi\n"
+                    f"Fungsi Keuntungan f(x): {self._fmt_rp(profit)}\n"
+                    f"Pendapatan Total R(x): {self._fmt_rp(r)}\n"
+                    f"Biaya Total C(x): {self._fmt_rp(cost)}\n"
+                    f"Turunan Pertama f'(x): {self._fmt_rp(p_prime)}/porsi\n"
                     f"Status: Posisi Slider Simulasi Interaktif"
-                ).replace(",", ".")
+                )
             else:
                 st_txt = "Zona Laba Positif (f(x) > 0)" if profit > 0 else ("Titik Impas (f(x) = 0)" if abs(profit) < 1 else "Zona Rugi Defisit (f(x) < 0)")
                 rec_txt = "Tambah porsi (f'(x) > 0)" if p_prime > 50 else ("Kurangi porsi (f'(x) < 0)" if p_prime < -50 else "Puncak laba (f'(x) = 0)")
@@ -2671,15 +2700,15 @@ class KalkulusUMKMApp(ctk.CTk):
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Produksi (x): {q:.1f} porsi/hari\n"
-                    f"Fungsi Keuntungan f(x): Rp {profit:,.0f}\n"
-                    f"Pendapatan Total R(x): Rp {r:,.0f}\n"
-                    f"Biaya Total C(x): Rp {cost:,.0f}\n"
-                    f"Biaya Rata-Rata AC(x): Rp {ac:,.0f}/porsi\n"
-                    f"Turunan Pertama f'(x): Rp {p_prime:,.0f}/porsi\n"
+                    f"Fungsi Keuntungan f(x): {self._fmt_rp(profit)}\n"
+                    f"Pendapatan Total R(x): {self._fmt_rp(r)}\n"
+                    f"Biaya Total C(x): {self._fmt_rp(cost)}\n"
+                    f"Biaya Rata-Rata AC(x): {self._fmt_rp(ac)}/porsi\n"
+                    f"Turunan Pertama f'(x): {self._fmt_rp(p_prime)}/porsi\n"
                     f"Uji Turunan Pertama: {uji1_txt}\n"
-                    f"Titik Kritis x*: {q_opt:.1f} | Nilai Maks: Rp {p_opt:,.0f}\n"
+                    f"Titik Kritis x*: {q_opt:.1f} | Nilai Maks: {self._fmt_rp(p_opt)}\n"
                     f"Status: {st_txt} | {rec_txt}"
-                ).replace(",", ".")
+                )
 
         elif plot_type == "rev_cost":
             target_y = r
@@ -2708,43 +2737,43 @@ class KalkulusUMKMApp(ctk.CTk):
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Optimum (x*): {q:.1f} porsi/hari\n"
-                    f"Pendapatan Total R(x*): Rp {r:,.0f}\n"
-                    f"Biaya Total C(x*): Rp {cost:,.0f}\n"
-                    f"Gap Laba Maksimum (R - C): Rp {gap:,.0f}\n"
-                    f"Kemiringan Kurva: R' = C' = Rp {p:,.0f}\n"
-                    f"Biaya Tetap FC: Rp {c:,.0f}\n"
-                    f"Biaya Variabel VC: Rp {a*(q**2) + b*q:,.0f}\n"
+                    f"Pendapatan Total R(x*): {self._fmt_rp(r)}\n"
+                    f"Biaya Total C(x*): {self._fmt_rp(cost)}\n"
+                    f"Gap Laba Maksimum (R - C): {self._fmt_rp(gap)}\n"
+                    f"Kemiringan Kurva: R' = C' = {self._fmt_rp(p)}\n"
+                    f"Biaya Tetap FC: {self._fmt_rp(c)}\n"
+                    f"Biaya Variabel VC: {self._fmt_rp(a*(q**2) + b*q)}\n"
                     f"Status: Celah Vertikal R(x) - C(x) Terbesar"
-                ).replace(",", ".")
+                )
             elif is_near_bep1 or is_near_bep2:
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Impas (BEP): {q:.1f} porsi/hari\n"
-                    f"Pendapatan = Biaya: Rp {r:,.0f}\n"
+                    f"Pendapatan = Biaya: {self._fmt_rp(r)}\n"
                     f"Gap Keuntungan: Rp 0 (Impas)\n"
                     f"Status: Titik Perpotongan Dua Kurva"
-                ).replace(",", ".")
+                )
             elif is_near_slider:
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Terpilih: {q:.1f} porsi/hari\n"
-                    f"Pendapatan Total R(x): Rp {r:,.0f}\n"
-                    f"Biaya Total C(x): Rp {cost:,.0f}\n"
-                    f"Celah Keuntungan: Rp {gap:,.0f}\n"
+                    f"Pendapatan Total R(x): {self._fmt_rp(r)}\n"
+                    f"Biaya Total C(x): {self._fmt_rp(cost)}\n"
+                    f"Celah Keuntungan: {self._fmt_rp(gap)}\n"
                     f"Status: Posisi Slider Pada R(x) dan C(x)"
-                ).replace(",", ".")
+                )
             else:
                 st_rc = "Laba (R > C)" if gap > 0 else ("Impas (R = C)" if abs(gap) < 1 else "Rugi (C > R)")
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Produksi (x): {q:.1f} porsi/hari\n"
-                    f"Pendapatan R(x): Rp {r:,.0f}\n"
-                    f"Biaya Total C(x): Rp {cost:,.0f}\n"
-                    f"Celah Keuntungan: Rp {gap:,.0f}\n"
-                    f"Biaya Tetap FC: Rp {c:,.0f}\n"
-                    f"Biaya Variabel VC: Rp {a*(q**2) + b*q:,.0f}\n"
+                    f"Pendapatan R(x): {self._fmt_rp(r)}\n"
+                    f"Biaya Total C(x): {self._fmt_rp(cost)}\n"
+                    f"Celah Keuntungan: {self._fmt_rp(gap)}\n"
+                    f"Biaya Tetap FC: {self._fmt_rp(c)}\n"
+                    f"Biaya Variabel VC: {self._fmt_rp(a*(q**2) + b*q)}\n"
                     f"Status: {st_rc}"
-                ).replace(",", ".")
+                )
 
         elif plot_type == "marginal":
             target_y = mc
@@ -2773,21 +2802,21 @@ class KalkulusUMKMApp(ctk.CTk):
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Optimum (x*): {q:.1f} porsi/hari\n"
-                    f"Marginal Revenue MR: Rp {mr:,.0f}/porsi\n"
-                    f"Marginal Cost MC: Rp {mc:,.0f}/porsi\n"
+                    f"Marginal Revenue MR: {self._fmt_rp(mr)}/porsi\n"
+                    f"Marginal Cost MC: {self._fmt_rp(mc)}/porsi\n"
                     f"Laba Marjinal f'(x*): Rp 0/porsi\n"
                     f"Kondisi Stasioner: MR = MC Tercapai\n"
                     f"Status: Titik Balik Keuntungan Maksimal"
-                ).replace(",", ".")
+                )
             elif is_near_slider:
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Terpilih: {q:.1f} porsi/hari\n"
-                    f"Marginal Revenue MR: Rp {mr:,.0f}/porsi\n"
-                    f"Marginal Cost MC: Rp {mc:,.0f}/porsi\n"
-                    f"Selisih MR - MC: Rp {diff:,.0f}/porsi\n"
+                    f"Marginal Revenue MR: {self._fmt_rp(mr)}/porsi\n"
+                    f"Marginal Cost MC: {self._fmt_rp(mc)}/porsi\n"
+                    f"Selisih MR - MC: {self._fmt_rp(diff)}/porsi\n"
                     f"Status: Evaluasi Marjinal Slider"
-                ).replace(",", ".")
+                )
             else:
                 if diff > 50:
                     st_mc = "MR > MC: Tambahan porsi menambah total laba"
@@ -2798,11 +2827,11 @@ class KalkulusUMKMApp(ctk.CTk):
                 text_info = (
                     f"[{label_tag}]\n"
                     f"Porsi Produksi (x): {q:.1f} porsi/hari\n"
-                    f"Marginal Revenue MR: Rp {mr:,.0f}/porsi\n"
-                    f"Marginal Cost MC: Rp {mc:,.0f}/porsi\n"
-                    f"Laju Laba f'(x): Rp {diff:,.0f}/porsi\n"
+                    f"Marginal Revenue MR: {self._fmt_rp(mr)}/porsi\n"
+                    f"Marginal Cost MC: {self._fmt_rp(mc)}/porsi\n"
+                    f"Laju Laba f'(x): {self._fmt_rp(diff)}/porsi\n"
                     f"Interpretasi: {st_mc}"
-                ).replace(",", ".")
+                )
 
         annot.xy = (q, target_y)
         annot.set_text(text_info)
@@ -2812,8 +2841,18 @@ class KalkulusUMKMApp(ctk.CTk):
         x_frac = (q - x_min) / max(1e-5, (x_max - x_min))
         y_frac = (target_y - y_min) / max(1e-5, (y_max - y_min))
 
-        offset_x = -245 if x_frac > 0.52 else 18
-        offset_y = -140 if y_frac > 0.50 else 18
+        if x_frac > 0.55:
+            ha, offset_x = "right", -16
+        else:
+            ha, offset_x = "left", 16
+
+        if y_frac > 0.55:
+            va, offset_y = "top", -16
+        else:
+            va, offset_y = "bottom", 16
+
+        annot.set_ha(ha)
+        annot.set_va(va)
         annot.set_position((offset_x, offset_y))
 
         patch = annot.get_bbox_patch()

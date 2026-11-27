@@ -867,8 +867,11 @@ KATEGORI_MODELS: Dict[str, Dict[str, Any]] = {
 def _round_rupiah(val: float, step: int = 50) -> int:
     if not isinstance(val, (int, float)) or not math.isfinite(float(val)):
         return 0
+    val_f = float(val)
     step = max(1, int(step))
-    return int(round(val / step) * step)
+    if 0 < val_f < step:
+        return max(1, int(round(val_f)))
+    return int(round(val_f / step) * step)
 
 
 def _apply_volatility(base_val: float, vol_bounds: Tuple[float, float], vol_factor: float) -> float:
@@ -952,7 +955,14 @@ def _compute_raw_tier_profile(p: float, kat_key: str, wil: Dict[str, Any]) -> Di
             k: (low["fixed_costs"][k] + t * (high["fixed_costs"][k] - low["fixed_costs"][k])) * f_fac
             for k in low["fixed_costs"]
         }
-        takaran_map = dict(high["var_takaran"] if t >= 0.5 else low["var_takaran"])
+        raw_takaran = high["var_takaran"] if t >= 0.5 else low["var_takaran"]
+        if 0.05 <= t <= 0.95:
+            takaran_map = {
+                k: (v if v.strip() == "-" or v.startswith("~ ") else f"~ {v}")
+                for k, v in raw_takaran.items()
+            }
+        else:
+            takaran_map = dict(raw_takaran)
         basis_map = dict(high["fixed_basis"] if t >= 0.5 else low["fixed_basis"])
 
     return {
@@ -985,8 +995,8 @@ def _evaluate_scenario(
         max_val = _apply_volatility(base_val, bounds, 1.0)
 
         subtotal = int(round(adj_val)) if (is_exact_normal_anchor and vol_factor == 0.0) else _round_rupiah(adj_val, 10)
-        min_sub = _round_rupiah(min_val, 10)
-        max_sub = _round_rupiah(max_val, 10)
+        min_sub = min(_round_rupiah(min_val, 10), subtotal)
+        max_sub = max(_round_rupiah(max_val, 10), subtotal)
         var_items.append({
             "key": key,
             "komponen": nama,
@@ -1008,8 +1018,8 @@ def _evaluate_scenario(
         max_val = _apply_volatility(base_val, bounds, 1.0)
 
         subtotal = int(round(adj_val)) if (is_exact_normal_anchor and vol_factor == 0.0) else _round_rupiah(adj_val, 100)
-        min_sub = _round_rupiah(min_val, 100)
-        max_sub = _round_rupiah(max_val, 100)
+        min_sub = min(_round_rupiah(min_val, 100), subtotal)
+        max_sub = max(_round_rupiah(max_val, 100), subtotal)
         fixed_items.append({
             "key": key,
             "komponen": nama,
@@ -1118,6 +1128,13 @@ def hitung_estimasi_umkm(
     q_target = max(q_opt_est * 2.0, q_bep2_est * 1.07)
     q_max_baru = max(40, int(math.ceil(q_target / 5.0) * 5))
 
+    b_min = min(sk["b"] for sk in skenario_harga)
+    b_max = max(sk["b"] for sk in skenario_harga)
+    c_min = min(sk["c"] for sk in skenario_harga)
+    c_max = max(sk["c"] for sk in skenario_harga)
+    modal_harian_min = min(sk["total_modal_harian"] for sk in skenario_harga)
+    modal_harian_max = max(sk["total_modal_harian"] for sk in skenario_harga)
+
     return {
         "kategori": kat_key,
         "nama_usaha": model["nama"],
@@ -1136,12 +1153,12 @@ def hitung_estimasi_umkm(
         "q_target_harian": aktif["q_target_harian"],
         "modal_bahan_harian": aktif["modal_bahan_harian"],
         "total_modal_harian": aktif["total_modal_harian"],
-        "b_min": skenario_harga[1]["b"],
-        "b_max": skenario_harga[3]["b"],
-        "c_min": skenario_harga[1]["c"],
-        "c_max": skenario_harga[3]["c"],
-        "modal_harian_min": skenario_harga[1]["total_modal_harian"],
-        "modal_harian_max": skenario_harga[3]["total_modal_harian"],
+        "b_min": b_min,
+        "b_max": b_max,
+        "c_min": c_min,
+        "c_max": c_max,
+        "modal_harian_min": modal_harian_min,
+        "modal_harian_max": modal_harian_max,
         "var_items": aktif["var_items"],
         "fixed_items": aktif["fixed_items"],
         "skenario_harga": skenario_harga,
